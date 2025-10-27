@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyc
+.venv/
+.mypy_cache/
+.pytest_cache/
+.coverage
+dist/
+build/
+
+# Node / frontend
+node_modules/
+frontend/dist/
+frontend/.env.development
+frontend/.env.production
+!frontend/.env.production.example
+
+# Env（保留 .example
+!/.env.example
+!/deploy/.env.example
+.env
+.env.*
+infra/.env
+infra/.env.prod
+backend/.env.dev
+deploy/.env
+
+
+# Misc / OS / IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!/.vscode/settings.json
+!/.vscode/extensions.json
+
+# Logs
+*.log
+logs/
+
+# Alembic artifacts (keep migrations tracked)
+alembic.ini~

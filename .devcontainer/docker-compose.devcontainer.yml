@@ -1,0 +1,14 @@
+services:
+  backend:
+    command: ["sleep", "infinity"]
+    volumes:
+      - ..:/workspace:cached
+      - ../backend:/app
+    environment:
+      PYTHONPATH: /workspace/backend
+      ALEMBIC_CONFIG: /workspace/backend/alembic.ini
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started

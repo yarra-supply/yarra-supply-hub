@@ -1,0 +1,30 @@
+# 开发环境依赖
+-r base.txt
+
+# Test
+pytest>=8.1,<9            # 测试框架
+pytest-asyncio==0.21.1    # 异步测试支持
+pytest-cov==4.1.0         # 测试覆盖率
+pytest-httpx>=0.35,<1.0   # HTTP请求模拟, 正确的 httpx mock 插件（不要 httpx-mock）
+faker==20.1.0
+
+
+# 代码质量
+black==23.12.0
+ruff==0.5.0
+mypy==1.7.0
+pre-commit==3.5.0
+# 选用 ruff 后，通常不再需要 flake8/isort
+# flake8==6.1.0
+# isort==5.13.0
+
+
+# 调试
+ipython==8.18.0
+ipdb==0.13.13
+debugpy>=1.8.17
+
+
+
+# 监控（开发环境only）
+# flower==2.0.1

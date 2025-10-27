@@ -1,0 +1,23 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtualenv & local
+.venv/
+.env
+*.log
+
+# Tests, tooling caches
+tests/
+.mypy_cache/
+.pytest_cache/
+.coverage
+
+# VCS
+.git/
+.gitignore
+
+# Editors
+.vscode/
+.idea/

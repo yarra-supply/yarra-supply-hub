@@ -1,0 +1,64 @@
+# Core
+fastapi==0.115.0             # 主框架，提供高性能的异步API支持
+uvicorn[standard]==0.30.6    # ASGI服务器，用于运行FastAPI应用
+gunicorn==21.2.0             # 生产服务器
+python-dotenv==1.0.1         # 读取.env文件中的环境变量
+pydantic==2.8.2              # 数据验证和序列化，FastAPI的核心依赖
+pydantic-settings>=2.0.0     # 基于Pydantic的配置管理
+
+
+# Database
+SQLAlchemy==2.0.34       # ORM框架，处理数据库操作
+alembic==1.13.2          # 数据库迁移工具
+psycopg[binary]>=3.1,<4.0    # 用 psycopg v3，同步 engine/Alembic 都通用
+
+
+# Celery / Redis
+celery[redis]==5.4.0    # 分布式任务队列, Redis客户端, 已包含异步支持
+
+
+# ---- HTTP clients / external SDK ----
+httpx==0.27.2                # 现代HTTP客户端，支持异步
+# shopify-python-api==12.4.0   # Shopify官方SDK
+ShopifyAPI>=12.6,<13
+
+
+# Data Processing
+pandas==2.1.3          # 数据分析和处理
+numpy==1.26.2          # 数值计算
+openpyxl==3.1.2        # Excel文件处理
+
+
+# Monitoring & Logging
+loguru==0.7.2               # 开发环境，简单易用
+# sentry-sdk==2.14.0          # 生产环境错误追踪（可选）用到再放prod.txt
+python-json-logger==2.0.7   # JSON格式日志
+
+
+# ---- JSON / time ----
+python-dateutil==2.8.2    # 日期时间处理
+pytz==2023.3              # 时区处理（墨尔本时间）
+orjson>=3.10,<4.0            # 高性能JSON序列化
+
+
+# Authentication & security login use
+python-jose[cryptography]==3.3.0    # JWT令牌处理
+passlib[bcrypt]==1.7.4              # 密码加密, 有用户登陆功能才需要
+bcrypt==4.0.1                        
+# python-multipart==0.0.6          
+# 表单数据处理, 文件上传 - 如果只处理JSON数据，不需要
+
+
+# ---- Scheduler ----
+croniter==2.0
+
+requests>=2.31.0
+
+
+
+# 因为定时计划是“页面可配置 + 存 DB 的 CRON 字符串”。
+# 我们用 “每分钟 tick” 的 Celery Beat，不直接写死周三/周四；scheduler_tick() 
+# 要解析 DB 里的 CRON，判断“这一分钟是否要触发”。
+# croniter 就是做这个的：把像 0 20 * * WED / 15 10 * * THU 解析、
+# 计算下一次触发时间，配合 tz 做本地化时间判断。
+# 所以它是运行时必须，放 base.txt（而非 dev-only）。

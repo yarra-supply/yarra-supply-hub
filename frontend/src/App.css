@@ -1,0 +1,85 @@
+/* 示例：使用 Inter 并兼容中文 */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@600;700;800&display=swap');
+
+
+/* #root {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 2rem;
+  text-align: center;
+} */
+
+.logo {
+  height: 6em;
+  padding: 1.5em;
+  will-change: filter;
+  transition: filter 300ms;
+}
+.logo:hover {
+  filter: drop-shadow(0 0 2em #646cffaa);
+}
+.logo.react:hover {
+  filter: drop-shadow(0 0 2em #61dafbaa);
+}
+
+@keyframes logo-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  a:nth-of-type(2) .logo {
+    animation: logo-spin infinite 20s linear;
+  }
+}
+
+.card {
+  padding: 2em;
+}
+
+.read-the-docs {
+  color: #888;
+}
+
+
+.app-brand {
+  color: #fff;
+  padding: 16px;
+  font-size: 20px;
+  font-weight: 800;
+  letter-spacing: 0.2px;
+  font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue',
+    Arial, 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+}
+
+
+选中项背景/文字色
+.app-sider .ant-menu-dark .ant-menu-item-selected {
+  background-color: #1b3a6b;
+  color: #fff;
+}
+
+/* 悬停项背景/文字色（未选中态）*/
+.app-sider .ant-menu-dark .ant-menu-item:hover:not(.ant-menu-item-selected),
+.app-sider .ant-menu-dark .ant-menu-submenu-title:hover {
+  background-color: #163058;
+  color: #fff;
+}
+
+/* 子菜单已展开时父项背景（可选）*/
+.app-sider .ant-menu-dark .ant-menu-submenu-open > .ant-menu-submenu-title {
+  background-color: #0b1626;
+}
+
+/* 图标/箭头颜色（可选）*/
+.app-sider .ant-menu-dark .ant-menu-item .anticon,
+.app-sider .ant-menu-dark .ant-menu-submenu-title .ant-menu-submenu-arrow {
+  color: #cbd5e1;
+}
+.app-sider .ant-menu-dark .ant-menu-item-selected .anticon {
+  color: #fff;
+}

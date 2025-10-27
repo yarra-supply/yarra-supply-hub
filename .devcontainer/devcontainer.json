@@ -1,0 +1,42 @@
+{
+  "name": "Yarra Supply Hub (dev)",
+  "dockerComposeFile": [
+    "../deploy/docker-compose.yml",
+    "./docker-compose.devcontainer.yml"
+  ],
+  "service": "backend",
+  "runServices": ["backend", "db", "redis"],
+  "workspaceFolder": "/workspace",
+  "overrideCommand": true,
+  "shutdownAction": "stopCompose",
+  "containerEnv": {
+    "PYTHONPATH": "/workspace/backend",
+    "ALEMBIC_CONFIG": "/workspace/backend/alembic.ini"
+  },
+  "features": {
+    "ghcr.io/devcontainers/features/python:1": {
+      "version": "3.11"
+    }
+  },
+  "customizations": {
+    "vscode": {
+      "settings": {
+        "python.defaultInterpreterPath": "/usr/local/bin/python",
+        "python.analysis.extraPaths": ["/workspace/backend"],
+        "python.envFile": "${workspaceFolder}/deploy/.env",
+        "python.testing.pytestEnabled": true,
+        "python.testing.pytestArgs": [
+          "backend/tests"
+        ],
+        "python.testing.unittestEnabled": false
+      },
+      "extensions": [
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "ms-azuretools.vscode-docker"
+      ]
+    }
+  },
+  "forwardPorts": [8000, 5555, 5678],
+  "postCreateCommand": "python -V && pip -V && pip install --no-cache-dir -r backend/requirements/dev.txt"
+}
