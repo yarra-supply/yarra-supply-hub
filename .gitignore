@@ -1,43 +1,153 @@
-# Python
-__pycache__/
-*.py[cod]
-*.pyc
-.venv/
-.mypy_cache/
-.pytest_cache/
-.coverage
-dist/
-build/
-
-# Node / frontend
-node_modules/
-frontend/dist/
-frontend/.env.development
-frontend/.env.production
-!frontend/.env.production.example
-
-# Env（保留 .example
-!/.env.example
-!/deploy/.env.example
-.env
-.env.*
-infra/.env
-infra/.env.prod
-backend/.env.dev
-deploy/.env
-
-
-# Misc / OS / IDE
+# ========== OS / Editors ==========
 .DS_Store
 Thumbs.db
-.idea/
-.vscode/*
-!/.vscode/settings.json
-!/.vscode/extensions.json
+*.swp
+*.swo
+*.orig
 
-# Logs
+
+# Keep VS Code workspace settings if你想共享就删掉下面两行的"!"号
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+!.vscode/launch.json
+
+# Devcontainers 配置应提交
+# （不忽略 .devcontainer/
+
+
+# ========== Global secrets / env ==========
+# 允许任何目录下的 .env.example / .env.*.example 被提交
+!**/.env.example
+!**/.env.*.example
+
+
+# 忽略所有真实 env（任意目录）
+.env
+.env.*
+**/.env
+**/.env.*
+
+
+# 常见密钥/证书（任何目录）
+*.pem
+*.key
+*_rsa
+*_ed25519
+*.p12
+*.pfx
+*.keystore
+**/service-account*.json
+**/*credentials*.json
+
+# 如果在仓库里放了证书占位文件，可用 README 或 .keep 方式保留
+# 例如：frontend/certs/.keep、deploy/certs/.keep
+
+
+# ========== Python / Backend ==========
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+.eggs/
+.venv/
+venv/
+pip-wheel-metadata/
+.mypy_cache/
+.pytest_cache/
+.pytype/
+.pyre/
+.coverage
+.coverage.*
+htmlcov/
+.cache/
+
+
+# 构建产物（如果 backend 有打包）
+backend/dist/
+backend/build/
+
+# alembic 临时/缓存（保留迁移脚本）
+alembic/*.tmp
+alembic/cache/
+
+# 日志 & 运行时数据库
 *.log
 logs/
+*.sqlite
+*.sqlite3
+*.db
 
-# Alembic artifacts (keep migrations tracked)
-alembic.ini~
+
+
+# ========== Node / Frontend (Vite) ==========
+# 依赖目录
+node_modules/
+frontend/node_modules/
+
+# 构建产物
+frontend/dist/
+frontend/.vite/
+frontend/.eslintcache
+
+# 本地环境文件（例：.env.local、.env.production 本体）
+frontend/.env*
+!frontend/.env.local.example
+!frontend/.env.prd.example
+
+# 锁文件需要提交，勿忽略（为了可复现）
+# package-lock.json
+# yarn.lock
+# pnpm-lock.yaml
+
+
+# ========== Docker / Compose ==========
+# Compose 本身的 yaml 应提交；可忽略本地 override
+docker-compose.*.local.yml
+**/docker-data/
+**/tmp/
+**/temp/
+**/cache/
+**/backups/
+
+
+# Redis/AOF 持久化文件（若有挂载到仓库）
+**/redis/*.rdb
+**/redis/*.aof
+
+# ========== Scripts / Artifacts ==========
+*.bak
+*.dump
+*.sql
+*.sql.gz
+*.tar
+*.tar.gz
+*.zip
+*.csv~
+*.tsv~
+
+
+
+# ========== Infra ==========
+# 通常 .env / 密钥在前面的通配已忽略
+infra/**/kubeconfig
+.terraform/
+terraform.tfstate
+terraform.tfstate.*
+
+# ========== Project-specific paths from your tree ==========
+# 后端 env 示例文件允许提交（已由通配保留）
+# backend/.env.example  -> will be committed
+# 部署真实 env 忽略
+deploy/.env
+
+# 本地证书（两端都有）
+backend/certs/
+frontend/certs/
+deploy/certs/
+
+# 这些文件应提交：.dockerignore / Dockerfile / devcontainer 等
+# （不在忽略列表中）
+
