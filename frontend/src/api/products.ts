@@ -19,7 +19,7 @@ export type ProductQuery = {
 /*
   查询商品列表接口
 */
-export async function fetchProducts(params: any) {
+export async function fetchProducts(params: ProductQuery) {
   const res = await http.get<ProductsPage>('/products', { params });
   return res.data;
 }
@@ -29,7 +29,7 @@ export async function fetchProducts(params: any) {
   查询商品tags接口
 */
 export async function fetchProductTags(): Promise<string[]> {
-  const { data } = await http.get('/products/tags');
+  const { data } = await http.get<string[]>('/products/tags');
   return data;
 }
 

@@ -4,13 +4,18 @@ from __future__ import annotations
 from logging import log
 from fastapi import APIRouter, Query, Depends, Response
 from fastapi.responses import StreamingResponse
-from typing import List, Optional, Literal
-from datetime import datetime, date, timezone
+from typing import List, Optional, Literal, Dict, Any
+from datetime import datetime, date, time, timezone
+from decimal import Decimal
 from sqlalchemy.orm import Session
 from app.db.session import SessionLocal
 from pydantic import BaseModel, Field
 import logging
-from app.repository.product_repo import ( export_products_csv_iter, )
+from app.repository.product_repo import (
+    export_products_csv_iter,
+    fetch_distinct_product_tags,
+    fetch_products_page,
+)
 from app.services.auth_service import get_current_user
 
 
@@ -43,6 +48,7 @@ class Product(BaseModel):
     width: Optional[float] = None
     height: Optional[float] = None
     weight: Optional[float] = None
+    cbm: Optional[float] = None
 
     # 运费相关字段
     freight_act: Optional[float] = None
@@ -90,15 +96,9 @@ def get_db():
 
 
 @router.get("/products/tags", response_model=List[str])
-def list_product_tags():
-    # 若你现在是 DB，可在这里 SELECT DISTINCT UNNEST(tags)
-    # 这里从 MOCK_PRODUCTS 里汇总去重
-    seen = set()
-    for p in MOCK_PRODUCTS:
-        for t in (p.get("tags") or []):
-            if t:
-                seen.add(t)
-    return sorted(seen)
+def list_product_tags(db: Session = Depends(get_db)):
+    tags = fetch_distinct_product_tags(db)
+    return tags
 
 
 
@@ -115,6 +115,7 @@ def list_products(
     page: int = Query(1, ge=1, description="页码，从1开始"),
     page_size: Optional[int] = Query(None, alias="page_size", ge=1, le=200, description="每页条数"),
     size: Optional[int] = Query(None, alias="size", ge=1, le=200, description="兼容旧参数名 size"),
+    db: Session = Depends(get_db),
 ):
     
     logger.info("products: sku=%s tag=%s page=%s page_size=%s",sku, tag, page, page_size or size)
@@ -122,38 +123,19 @@ def list_products(
     # 兼容 page_size 与 size 两个参数名
     ps = page_size or size or 20
 
-    # 过滤
-    items = MOCK_PRODUCTS
+    tags_filter = _normalize_tags_filter(tag)
+    rows, total = fetch_products_page(
+        db,
+        sku_prefix=sku,
+        tags=tags_filter,
+        page=page,
+        page_size=ps,
+    )
 
-    # —— SKU 前缀模糊（startswith）——
-    if sku:
-        key = sku.lower()
-        items = [p for p in items if (p.get("sku_code", "").lower().startswith(key))]
+    items = [_build_product_from_row(row) for row in rows]
 
-    # —— Tag 精确匹配（等于 tags 数组中某一项，忽略大小写）——
-    # if tag:
-    #     t = tag.lower()
-    #     items = [p for p in items if any(t == tg.lower() for tg in (p.tags or []))]
-    # tag 精确匹配（忽略大小写；可支持逗号分隔多标签）
-    if tag:
-        wanted = {t.strip().lower() for t in tag.split(",") if t.strip()}
-        items = [
-            p for p in items
-            if any((tg or "").lower() in wanted for tg in (p.get("tags") or []))
-        ]
-
-    total = len(items)
-
-    # 排序：按 updated_at 降序（可按需调整）
-    # items.sort(key=lambda p: p.updated_at or datetime.min, reverse=True)
-
-    # 分页
-    start = (page - 1) * ps
-    end = start + ps
-    page_items = items[start:end]
-
-    logger.info("products: total=%s return=%s", total, len(items[start:end]))
-    return ProductsPage(items=page_items, total=total)
+    logger.info("products: total=%s return=%s", total, len(items))
+    return ProductsPage(items=items, total=total)
 
 
 
@@ -203,6 +185,72 @@ def _to_date(dt: Optional[datetime]) -> Optional[date]:
     return dt.date() if isinstance(dt, datetime) else None
 
 
+def _normalize_tags_filter(raw: Optional[str]) -> Optional[List[str]]:
+    if not raw:
+        return None
+    items = [t.strip() for t in raw.split(",") if t.strip()]
+    return items or None
+
+
+def _as_float(value: Any) -> Optional[float]:
+    if isinstance(value, Decimal):
+        return float(value)
+    return value
+
+
+def _as_datetime(value: Any) -> Optional[datetime]:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, date):
+        return datetime.combine(value, time())
+    return None
+
+
+_DECIMAL_FIELDS = [
+    "price",
+    "rrp_price",
+    "special_price",
+    "shopify_price",
+    "weight",
+    "length",
+    "width",
+    "height",
+    "cbm",
+    "freight_act",
+    "freight_nsw_m",
+    "freight_nsw_r",
+    "freight_nt_m",
+    "freight_nt_r",
+    "freight_qld_m",
+    "freight_qld_r",
+    "remote",
+    "freight_sa_m",
+    "freight_sa_r",
+    "freight_tas_m",
+    "freight_tas_r",
+    "freight_vic_m",
+    "freight_vic_r",
+    "freight_wa_m",
+    "freight_wa_r",
+    "freight_nz",
+]
+
+
+def _build_product_from_row(row: Dict[str, Any]) -> Product:
+    data = dict(row)
+    for key in _DECIMAL_FIELDS:
+        if key in data:
+            data[key] = _as_float(data.get(key))
+    data["id"] = str(data.get("id")) if data.get("id") is not None else None
+    data["special_price_end_date"] = _as_datetime(data.get("special_price_end_date"))
+    data["updated_at"] = _as_datetime(data.get("updated_at"))
+    tags = data.pop("product_tags", None) or []
+    if not isinstance(tags, list):
+        tags = []
+    data["tags"] = tags
+    return Product(**data)
 
 
 
@@ -231,6 +279,7 @@ MOCK_PRODUCTS = [
         "width": 10.0 + i,
         "height": 8.0 + i,
         "weight": 1.2 + i * 0.1,
+        "cbm": 0.01 + i * 0.001,
 
         # 运费相关字段：演示数据
         "freight_act": 5.0 + i,

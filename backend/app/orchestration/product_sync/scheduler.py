@@ -2,7 +2,7 @@
 from __future__ import annotations
 import json
 import logging
-from typing import Iterable, Iterator, List, Tuple, Dict, Any, Optional
+from typing import Iterable, Iterator, List, Dict, Any, Optional
 import requests
 
 from sqlalchemy import func  # 用于 upsert 时的时间戳（如果仍在本文件用）
@@ -13,6 +13,7 @@ from app.db.model.product import ProductSyncChunk
 from app.repository.product_repo import upsert_chunk_pending
 
 from app.core.config import settings
+from app.integrations.shopify.payload_utils import normalize_tags
 
 
 logger = logging.getLogger(__name__)
@@ -42,7 +43,7 @@ def schedule_chunks_streaming(
         finalize_task_name: str = "app.orchestration.product_sync.product_sync_task.finalize_run",
 ):
 
-    buf_pairs: List[Tuple[str, str]] = []  # (sku, variant_id)
+    buf_entries: List[Dict[str, Any]] = []  # 聚合变体信息
     sigs = []
     
 
@@ -57,40 +58,55 @@ def schedule_chunks_streaming(
     db = SessionLocal()  
 
     try: 
-        # 在缓冲 pairs 里已经攒够一批 (sku, variant_id) 时才会被调用
-        def flush_chunk(pairs: List[Tuple[str, str]], chunk_idx: int):
+        # 在缓冲 entries 里攒够一批时才会被调用
+        def flush_chunk(entries: List[Dict[str, Any]], chunk_idx: int):
             nonlocal sigs, inline_results
-            if not pairs:
+            if not entries:
                 return
-            sku_codes = [s for s, _ in pairs]
+            sku_entries = []
+            for item in entries:
+                data = item or {}
+                sku = str(data.get("sku") or "").strip()
+                if not sku:
+                    continue
+                entry = {"sku": sku}
+                variant_id = data.get("variant_id")
+                if variant_id:
+                    entry["variant_id"] = str(variant_id)
+                if "price" in data and data.get("price") is not None:
+                    entry["price"] = data.get("price")
+                if "tags" in data:
+                    entry["tags"] = normalize_tags(data.get("tags"))
+                sku_entries.append(entry)
+
             task_id = f"ps:chunk:{run_id}:{chunk_idx}"
 
             # sql更新/写入，此时未commit，不会写入
-            upsert_chunk_pending(db, run_id, chunk_idx, sku_codes)
+            upsert_chunk_pending(db, run_id, chunk_idx, sku_entries)
             db.commit()  # 立即提交 manifest，保证后续任务可见
 
             if inline_mode:
                 from app.orchestration.product_sync.product_sync_task import process_chunk
-                inline_results.append(process_chunk.run(run_id, chunk_idx, sku_codes, False))
+                inline_results.append(process_chunk.run(run_id, chunk_idx, sku_entries, False))
             else:
-                sig = signature(process_task_name).s(run_id, chunk_idx, sku_codes, False).set(task_id=task_id)
+                sig = signature(process_task_name).s(run_id, chunk_idx, sku_entries, False).set(task_id=task_id)
                 sigs.append(sig)
 
-        # todo check 流式从url下载数据 
-        # test
+        # todo check 流式从url下载数据 增加字段
+        # test 当前只要前20数据
         source_iter = iter_variant_from_bulk_head(url, limit=head_limit)
-        for pair in source_iter:
-        # for pair in iter_variant_from_bulk(url):
-            buf_pairs.append(pair)
-            if len(buf_pairs) >= chunk_size:
-                # 在缓冲 pairs 里已经攒够一批 (sku, variant_id) 时才会被调用
-                flush_chunk(buf_pairs, idx)
-                buf_pairs.clear()
+        for item in source_iter:
+        # for item in iter_variant_from_bulk(url):
+            buf_entries.append(item)
+            if len(buf_entries) >= chunk_size:
+                # 在缓冲 entries 里已经攒够一批时才会被调用
+                flush_chunk(buf_entries, idx)
+                buf_entries.clear()
                 idx += 1
 
-        if buf_pairs:
-            flush_chunk(buf_pairs, idx)
-            buf_pairs.clear()
+        if buf_entries:
+            flush_chunk(buf_entries, idx)
+            buf_entries.clear()
             idx += 1
 
         # 此时 ProductSyncChunk 才会写入 
@@ -167,19 +183,19 @@ def schedule_chunks_streaming(
 
 
 
-# ====== 仅要 (sku, variant_id) 的轻量解析 ======
+# ====== 轻量解析：SKU / 变体 ID / 价格 / 标签 ======
 """
 流式解析 Shopify Bulk 导出 JSONL 的生成器：
-    - 用来从一条超大的 JSONL 文件里只提取关心的两个字段：sku 和 variant_id，
-    - 并 一行一行边读边产出 (sku, variant_id) 二元组，供后续按 5k 一片去切分、投递分片任务
+    - 用来从一条超大的 JSONL 文件里提取关心的字段：sku、variant_id、price 以及所属商品标签 tags，
+    - 并一行一行边读边产出 dict，供后续按 5k 一片去切分、投递分片任务
     - 内存友好：不把整份 JSONL 装入内存。
     - 用 requests.get(..., stream=True) 逐行读取 Shopify Bulk 的 JSONL
 """
-# todo test
 # 每行都会判定 __typename 或 id 是否包含 /ProductVariant/。只有确认是变体行才 yield (sku, variant_id)。
 # Product 行、其它类型的节点会被跳过，所以我们处理的粒度就是“变体”
-def iter_variant_from_bulk(url: str) -> Iterator[Tuple[str, str]]:
-    
+def iter_variant_from_bulk(url: str) -> Iterator[Dict[str, Any]]:
+    product_tags: Dict[str, List[str]] = {}
+
     # 建立 HTTP 流式请求
     with requests.get(url, stream=True, timeout=(10, 300), headers={"Accept-Encoding": "gzip, deflate"}) as r:
         r.raise_for_status()
@@ -193,23 +209,42 @@ def iter_variant_from_bulk(url: str) -> Iterator[Tuple[str, str]]:
             except Exception:
                 continue  # 行级 try/except，坏行直接跳过，不让整个任务失败
 
-            # 过滤出“变体行”
-            node_id = row.get("id")            # variant_id, 类似 gid://shopify/ProductVariant/1234567890
+            node_id = row.get("id")
             typename = row.get("__typename")
+            is_product = (typename == "Product") or (isinstance(node_id, str) and "/Product/" in node_id)
+            if is_product and isinstance(node_id, str):
+                product_tags[node_id] = normalize_tags(row.get("tags"))
+                continue
+
             is_variant = (typename == "ProductVariant") or (isinstance(node_id, str) and "/ProductVariant/" in node_id)
             # 由于 iter_variant_from_bulk 跳过 Product 行，所以缓冲里不会混入“非变体”的条目。
             # 每个 (sku, variant_id) 代表一个准确的变体。一个商品有多个变体，就会产生多条记录，也符合分片逻辑
             if not is_variant:
                 continue
 
-            # 取出需要的两个字段
+            # 取出需要的字段
             sku = (row.get("sku") or "").strip()
-            if sku and isinstance(node_id, str):
-                yield (sku, node_id)
+            if not (sku and isinstance(node_id, str)):
+                continue
+
+            parent_id = row.get("__parentId")
+            tags: List[str] = []
+            if isinstance(parent_id, str):
+                tags = product_tags.get(parent_id) or []
+
+            payload: Dict[str, Any] = {
+                "sku": sku,
+                "variant_id": node_id,
+            }
+            price = row.get("price")
+            if price is not None:
+                payload["price"] = price
+            payload["tags"] = list(tags)
+            yield payload
 
 
 
-def iter_variant_from_bulk_head(url: str, limit: Optional[int] = None) -> Iterator[Tuple[str, str]]:
+def iter_variant_from_bulk_head(url: str, limit: Optional[int] = None) -> Iterator[Dict[str, Any]]:
     """
     读取 JSONL 的前 limit 条记录；limit 为空则回退到完整结果。
     """
@@ -268,13 +303,13 @@ def schedule_chunks_from_manifest(
     sigs = []
     inline_results: List[dict] = [] if inline_mode else None
     for r in rows:
-        sku_codes = r.sku_codes or []
+        sku_entries = r.sku_codes or []
         task_id = f"ps:chunk:{run_id}:{r.chunk_idx}"
         if inline_mode:
             from app.orchestration.product_sync.product_sync_task import process_chunk
-            inline_results.append(process_chunk.run(run_id, r.chunk_idx, sku_codes, False))
+            inline_results.append(process_chunk.run(run_id, r.chunk_idx, sku_entries, False))
         else:
-            sig = signature(process_task_name).s(run_id, r.chunk_idx, sku_codes, False).set(task_id=task_id)
+            sig = signature(process_task_name).s(run_id, r.chunk_idx, sku_entries, False).set(task_id=task_id)
             sigs.append(sig)
 
     if inline_mode:

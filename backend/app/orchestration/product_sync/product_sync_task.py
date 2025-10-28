@@ -16,12 +16,18 @@ from sqlalchemy import func
 from app.db.model.product import ProductSyncRun, ProductSyncChunk
 
 from app.integrations.shopify.shopify_client import ShopifyClient
-from app.integrations.dsz import get_products_by_skus_with_stats, normalize_dsz_product
+from app.integrations.dsz import (
+    get_products_by_skus_with_stats, 
+    normalize_dsz_product,
+    get_zone_rates_by_skus,
+)
+from app.integrations.shopify.payload_utils import normalize_sku_payload
 from app.repository.product_repo import (
     load_existing_by_skus, diff_snapshot, bulk_upsert_sku_info, save_candidates,
     load_variant_ids_by_skus, mark_chunk_running, mark_chunk_succeeded, mark_chunk_failed,
 )
 from app.orchestration.product_sync.scheduler import schedule_chunks_streaming
+from app.orchestration.product_sync.chunk_enricher import enrich_shopify_snapshot
 from app.orchestration.freight_calculation.freight_task import kick_freight_calc
 
 # 可选 Redis 锁
@@ -51,16 +57,16 @@ def _poll_retry_delay(attempt: int, default_retry_delay: int = 60) -> int:
 
 
 def _dispatch_handle_bulk_finish(
-    bulk_id: str, url: str, object_count: Any | None, *, inline: bool
+    bulk_id: str, url: str, root_object_count: Any | None, *, inline: bool
 ):
     """
     根据执行模式触发 handle_bulk_finish。
     """
     if inline or _inline_tasks_enabled():
-        return handle_bulk_finish_inline(bulk_id, url, object_count)
+        return handle_bulk_finish_inline(bulk_id, url, root_object_count)
 
     handle_bulk_finish.apply_async(
-        args=[bulk_id, url, object_count], task_id=f"finish:{bulk_id}"
+        args=[bulk_id, url, root_object_count], task_id=f"finish:{bulk_id}"
     )
     return "handle_bulk_finish dispatched"
 
@@ -83,12 +89,14 @@ def _poll_bulk_until_ready_step(
             info = _shopify.current_bulk_operation() or {}
             status = info.get("status")
             url = info.get("url")
-            object_count = info.get("objectCount")
+            root_object_count = info.get("rootObjectCount")
+            if root_object_count is None:
+                root_object_count = info.get("objectCount")
             op_id = info.get("id")
 
             if status == "COMPLETED" and url:
                 result = _dispatch_handle_bulk_finish(
-                    op_id, url, object_count, inline=inline
+                    op_id, url, root_object_count, inline=inline
                 )
                 return (False, None, result or "handled via polling(current)")
 
@@ -107,7 +115,10 @@ def _poll_bulk_until_ready_step(
 
         status = info.get("status")
         url = info.get("url")
-        object_count = info.get("objectCount")
+        root_object_count = info.get("rootObjectCount")
+        # todo 需要兜底？
+        if root_object_count is None:
+            root_object_count = info.get("objectCount")
         op_id = info.get("id")
 
         run.shopify_bulk_status = status
@@ -121,7 +132,7 @@ def _poll_bulk_until_ready_step(
         if status == "COMPLETED" and url:
             bulk_id = run.shopify_bulk_id or op_id
             result = _dispatch_handle_bulk_finish(
-                bulk_id, url, object_count, inline=inline
+                bulk_id, url, root_object_count, inline=inline
             )
             return (False, None, result or "handled via polling")
 
@@ -261,7 +272,7 @@ Webhook/轮询：拿到 Bulk URL → 流式切片调度（5k/片）→ chord 汇
    - 可能分别被两个 worker 执行, 所以需要幂等性
 '''
 def _handle_bulk_finish_logic(
-    bulk_id: str, url: str, object_count: int | None = None
+    bulk_id: str, url: str, root_object_count: int | None = None
 ):
     db = SessionLocal()
 
@@ -283,9 +294,9 @@ def _handle_bulk_finish_logic(
         run.shopify_bulk_url = url
         
         # Shopify 返回的是字符串数字，这里转 int, 失败默认 0
-        if object_count is not None:
+        if root_object_count is not None:
             try:
-                run.total_shopify_skus = int(object_count or 0)
+                run.total_shopify_skus = int(root_object_count or 0)
             except Exception:
                 run.total_shopify_skus = 0
 
@@ -309,9 +320,9 @@ def _handle_bulk_finish_logic(
     retry_jitter=True,
     autoretry_for=(Exception,),
 )
-def handle_bulk_finish(self, bulk_id: str, url: str, object_count: int | None = None):
+def handle_bulk_finish(self, bulk_id: str, url: str, root_object_count: int | None = None):
     try:
-        return _handle_bulk_finish_logic(bulk_id, url, object_count)
+        return _handle_bulk_finish_logic(bulk_id, url, root_object_count)
     except SoftTimeLimitExceeded as e:
         logger.warning(
             "soft time limit exceeded, will retry: bulk_id=%s err=%s",
@@ -322,19 +333,19 @@ def handle_bulk_finish(self, bulk_id: str, url: str, object_count: int | None = 
 
 
 def handle_bulk_finish_inline(
-    bulk_id: str, url: str, object_count: int | None = None
+    bulk_id: str, url: str, root_object_count: int | None = None
 ):
     """
     调试入口：同步执行 handle_bulk_finish 逻辑。
     """
-    return _handle_bulk_finish_logic(bulk_id, url, object_count)
+    return _handle_bulk_finish_logic(bulk_id, url, root_object_count)
 
 
 
 '''
 分片任务 5k/片 
    - 不自动重试, 子批 (≤50) 强重试在 DSZ 层
-   - 入参 sku_variant_pairs = 5000个 (sku, variant_id) tuple 列表
+   - 入参 sku_codes 支持历史 List[str] 以及包含 {"sku", "variant_id"} 的结构化条目
 '''
 # 当前状态：用的是 Celery chord。如果任何一个分片任务抛异常，
 # 默认 chord 的回调（finalize_run）不会被触发，整趟 run 会一直卡在 running。
@@ -345,7 +356,7 @@ def handle_bulk_finish_inline(
     # soft_time_limit=600,
 )
 def process_chunk(run_id: str, chunk_idx: int, 
-    sku_codes: list[str], use_counter: bool = False
+    sku_codes: list[Any], use_counter: bool = False
 ):
 
     db = SessionLocal()
@@ -358,7 +369,7 @@ def process_chunk(run_id: str, chunk_idx: int,
         except Exception:
             db.rollback()
 
-        skus = list(sku_codes or []) # 提取所有 SKU 列表，作为后续查询与 DSZ 拉数的主键集合
+        skus, chunk_data_map = normalize_sku_payload(sku_codes)
         # 有些分片可能确实是空片, 把“空分片”视为成功: 没有要处理的数据 == 已经处理完
         if not skus:
             mark_chunk_succeeded(db, run_id, chunk_idx, stats={
@@ -375,16 +386,27 @@ def process_chunk(run_id: str, chunk_idx: int,
         
         # 1) 从 DB 批量读取旧快照 & 变体ID映射
         old_map = load_existing_by_skus(db, skus)
-        vid_map = load_variant_ids_by_skus(db, skus) 
+        vid_map = load_variant_ids_by_skus(db, skus)
+        for sku, payload in chunk_data_map.items():
+            variant_id = payload.get("variant_id")
+            if variant_id:
+                vid_map[sku] = variant_id
 
         # 2) 调 DSZ（内部：≤50/批 + 强重试 + 一致性告警）
         # todo 让 get_products_by_skus_with_stats 把失败的 sku 列表（无法返回/子批失败）交出来？
         items, stats = get_products_by_skus_with_stats(skus)
 
-        # todo 增加查询dsz的新接口获取sku的运费数据
+        # todo 增加查询dsz的新接口获取sku的运费数据 /v2/get_zone_rates（仅 sku + standard）
+        zone_list = get_zone_rates_by_skus(skus)
+        zone_map: dict[str, dict] = {}
+        for z in zone_list or []:
+            if isinstance(z, dict):
+                s = str(z.get("sku") or "").strip()
+                std = z.get("standard")
+                if s and isinstance(std, dict):
+                    zone_map[s] = std
 
         
-
         # 明细限长，防止单片过大（默认 500；可用 settings 配置）
         MAX_LIST = int(getattr(settings, "DSZ_DETAIL_LIST_MAX_PER_CHUNK", 500))  
         for key in ("missing_sku_list", "failed_sku_list", "extra_sku_list"): 
@@ -396,15 +418,19 @@ def process_chunk(run_id: str, chunk_idx: int,
         # 3) 把 DSZ 原始结构转换成系统内部统一的数据结构 + 拼接 attrsHash + 变体映射 
         normed: list[dict] = []
         for raw in items:
+            # todo 增加对于运费数据的组装,special_end_date 和运费都拿不到？
+            sku_raw = str((raw or {}).get("sku") or "").strip()  
+            std = zone_map.get(sku_raw)  
+            raw_for_norm = dict(raw) if isinstance(raw, dict) else {} 
+            if std:  # 注入给 normalizer
+                raw_for_norm["_zone_standard"] = std
+                
+            n = normalize_dsz_product(raw_for_norm)
 
-            # todo special_end_date 和运费都拿不到？
-            # todo 增加对于运费数据的组装
-            n = normalize_dsz_product(raw)
 
             sku = n.get("sku_code")
             if sku:
-                # 把这条商品的 Shopify 变体 ID 补进去，后续链路需要靠它回到 Shopify 侧
-                n["shopify_variant_id"] = vid_map.get(sku)
+                enrich_shopify_snapshot(n, sku, vid_map, chunk_data_map)
 
             # 计算属性哈希 —— 只使用 FREIGHT_HASH_FIELDS 中的入参字段
             # 这是“运费敏感字段哈希”的唯一落库点：存入 SkuInfo.attrs_hash_current

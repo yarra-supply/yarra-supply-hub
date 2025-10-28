@@ -17,6 +17,7 @@ export interface Product {
   width?: number;
   height?: number;
   weight?: number;
+  cbm?: number;
 
   // freight: Freight;  // 取消嵌套对象，直接扁平字段
   freight_act?: number;
@@ -26,7 +27,7 @@ export interface Product {
   freight_nt_r?: number;
   freight_qld_m?: number;
   freight_qld_r?: number;
-  remote?: boolean;
+  remote?: number;
   freight_sa_m?: number;
   freight_sa_r?: number;
   freight_tas_m?: number;
@@ -44,7 +45,6 @@ export interface Product {
 }
 
 export interface ProductsPage { items: Product[]; total: number; }
-
 
 
 

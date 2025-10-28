@@ -84,6 +84,16 @@ class DSZHttpClient:
         """发送 POST 请求并返回解析后的 JSON，附带鉴权/重试/限流。"""
         resp = self._request("POST", path, json=json_body, **kwargs)
         return self._as_json(resp)
+    
+
+    # 可选：get_zone_rates 的便捷包装（上层也可以直接用 post_json）
+    def get_zone_rates(self, skus: list[str], page_no: int = 1, limit: int = 160) -> Any:
+        """
+        便捷方法：调用 /v2/get_zone_rates，返回原始 JSON。
+        """
+        path = getattr(settings, "DSZ_ZONE_RATES_ENDPOINT", "/v2/get_zone_rates")
+        body = {"skus": ",".join(skus) if skus else "", "page_no": page_no, "limit": limit}
+        return self.post_json(path, json_body=body)
 
 
     # test ✅

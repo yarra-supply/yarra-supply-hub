@@ -1,4 +1,5 @@
 
+# 只保留后端/worker/redis 等运行期服务，并加载 .env.prod，通常用于线上或运维环境，不挂载本地代码
 
 services:
 

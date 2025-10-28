@@ -1,4 +1,6 @@
 
+# 带有 Postgres、Redis、前端和源码挂载，用来做本地开发；本地启动请用
+
 
 services:
   db:
@@ -47,8 +49,9 @@ services:
     env_file: [ ./.env ]
     restart: unless-stopped
     environment:
-      PYTHONPATH: /app/backend
-      ALEMBIC_CONFIG: /app/backend/alembic.ini  
+      PYTHONPATH: /yarra-workdir/backend
+      ALEMBIC_CONFIG: /yarra-workdir/backend/alembic.ini    # 环境变量，告诉 alembic 配置文件在哪里，是容器内的绝对路径
+      # alembic.ini 实际就在容器的 /yarra-workdir/backend/alembic.ini
     depends_on:
       db:
         condition: service_healthy
@@ -58,8 +61,8 @@ services:
       - "8000:8000"
       - "5678:5678"   # Python 远程调试端口
     volumes:
-      # - ..:/app                    # dev container使用
-      - ../:/app                       # ✅ 把整个项目挂载进 /app
+      # - ..:/yarra-workdir          # dev container使用
+      - ../backend:/yarra-workdir/backend              # ✅ 仅挂载 backend 目录，减少歧义和性能风险
     command: >
       bash -lc "uvicorn app.main:app --host 0.0.0.0 --port 8000"
       
@@ -74,12 +77,12 @@ services:
     build: { context: ../backend }
     env_file: [ ./.env ]
     environment:
-      PYTHONPATH: /app
+      PYTHONPATH: /yarra-workdir/backend
     depends_on:
       db: { condition: service_healthy }
       redis: { condition: service_started }
     volumes:
-      - ../backend:/app
+      - ../backend:/yarra-workdir/backend
     command: >
       bash -lc "celery -A app.core.celery_app worker -l info"  
       # 指向 Celery 应用实例，不是包目录，导入celery_app.py, 拿里面名为 celery_app 的实例, 使用实例配置的broker_url
@@ -91,12 +94,12 @@ services:
     build: { context: ../backend }
     env_file: [ ./.env ]
     environment:
-      PYTHONPATH: /app
+      PYTHONPATH: /yarra-workdir/backend
     depends_on:
       db: { condition: service_healthy }
       redis: { condition: service_started }
     volumes:
-      - ../backend:/app
+      - ../backend:/yarra-workdir/backend
     command: >
       bash -lc "celery -A app.core.celery_app beat -l info"
     restart: unless-stopped
@@ -108,7 +111,7 @@ services:
     env_file: [ ./.env ]      # 注入 VITE_* 变量
     # ports/command 依你的项目打开：
     # ports: [ "5173:5173" ]
-    # volumes: [ "../frontend:/app" ]
+    # volumes: [ "../frontend:/yarra-workdir" ]
     # command: [ "npm", "run", "dev" ]
 
 volumes:

@@ -16,7 +16,7 @@ RUN apt-get update \
       libpq-dev \
  && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /app
+WORKDIR /yarra-workdir
 
 # Copy requirements once so dependency layers can be cached.
 # dev container使用
@@ -55,22 +55,24 @@ ARG REQUIREMENTS_FILE=prod.txt
 RUN pip install --no-cache-dir --upgrade pip \
  && pip install --no-cache-dir -r /tmp/requirements/${REQUIREMENTS_FILE}
 
-WORKDIR /app
+WORKDIR /yarra-workdir
 # dev container 用
-# COPY backend/alembic.ini /app/alembic.ini
-# COPY backend/app /app/app
-# COPY backend/entrypoint.sh /app/entrypoint.sh
-# RUN chmod +x /app/entrypoint.sh
+# COPY backend/alembic.ini /yarra-workdir/alembic.ini
+# COPY backend/app /yarra-workdir/app
+# COPY backend/entrypoint.sh /yarra-workdir/entrypoint.sh
+# RUN chmod +x /yarra-workdir/entrypoint.sh
 
 # 本地用
-COPY alembic.ini /app/backend/alembic.ini
-COPY app /app/backend/app
-COPY entrypoint.sh /app/entrypoint.sh
-RUN chmod +x /app/entrypoint.sh
+COPY alembic.ini /yarra-workdir/backend/alembic.ini
+COPY app /yarra-workdir/backend/app
+COPY entrypoint.sh /yarra-workdir/entrypoint.sh
+RUN chmod +x /yarra-workdir/entrypoint.sh
+ENV PYTHONPATH=/yarra-workdir/backend \
+    ALEMBIC_CONFIG=/yarra-workdir/backend/alembic.ini
 
 EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --retries=5 \
   CMD curl -fsS http://localhost:8000/api/v1/health || exit 1
 
 # 默认命令（在 compose 中可改为 uvicorn --reload）
-CMD ["/app/entrypoint.sh", "gunicorn", "-c", "app/core/gunicorn_conf.py", "app.main:app"]
+CMD ["/yarra-workdir/entrypoint.sh", "gunicorn", "-c", "app/core/gunicorn_conf.py", "app.main:app"]

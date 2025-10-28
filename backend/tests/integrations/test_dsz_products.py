@@ -36,10 +36,11 @@ _DEFAULT_SAMPLE_SKUS: List[str] = [
     # "BW-CLEANER-58771",
     # "EAC-C-RC-01L-BK",
     # "GL-ECO-3T-1000",
-    "V201-HAZ0000WH8AU",
-    "V240-CMT-JFA-180-LED",
-    "V201-HOLD6079WH8AU",
-    "V178-36220",
+    # "V201-HAZ0000WH8AU",
+    # "V240-CMT-JFA-180-LED",
+    # "V201-HOLD6079WH8AU",
+    # "V178-36220",
+    "BAS-HOOP-160-RDBK"
 ]
 
 def _sample_skus() -> List[str]:

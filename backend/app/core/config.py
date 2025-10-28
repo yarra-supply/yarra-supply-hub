@@ -97,6 +97,12 @@ class Settings(BaseSettings):
     DSZ_PRODUCTS_SKU_PARAM: str = "skus"
     DSZ_PRODUCTS_MAX_PER_REQ: int = 50
     DSZ_PRODUCTS_SKU_FIELD: str = "sku"
+
+    # Zone rates 配置
+    DSZ_ZONE_RATES_ENDPOINT: str = "/v2/get_zone_rates"
+    DSZ_ZONE_RATES_METHOD: str = "POST"   # 文档是 POST
+    DSZ_ZONE_RATES_LIMIT: int = 160       # 官方上限 160
+
     DSZ_GLOBAL_RL_ENABLED: bool = False
     DSZ_GLOBAL_RATE_LIMIT_REDIS_URL: str | None = None
     DSZ_GLOBAL_RL_MAX_RPM: int = 60  # 每分钟最大速率（rate）

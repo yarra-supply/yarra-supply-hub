@@ -67,6 +67,7 @@ BULK_PRODUCTS_BY_TAG_AND_STATUS = r"""
       node {
         id
         vendor
+        tags               # 产品标签字段
         variants%(variants_args)s {
           edges {
             node {

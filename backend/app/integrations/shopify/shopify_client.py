@@ -376,6 +376,7 @@ class ShopifyClient:
               id
               status
               objectCount
+              rootObjectCount
               url
               createdAt
               completedAt
@@ -392,13 +393,14 @@ class ShopifyClient:
         if node.get("__typename") != "BulkOperation":
             return {}
         
-        # 规范化 objectCount（Shopify 返回字符串）
-        oc = node.get("objectCount")
-        if isinstance(oc, str):
-            try:
-                node["objectCount"] = int(oc)
-            except ValueError:
-                pass
+        # 规范化计数（Shopify 返回字符串）
+        for key in ("objectCount", "rootObjectCount"):
+            value = node.get(key)
+            if isinstance(value, str):
+                try:
+                    node[key] = int(value)
+                except ValueError:
+                    pass
         
         # 删除 __typename，保持对外返回干净
         node.pop("__typename", None)

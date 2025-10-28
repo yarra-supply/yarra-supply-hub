@@ -85,6 +85,7 @@ def load_inputs_for_skus(db: Session, skus: List[str]) -> List[Tuple[str, Freigh
             width=getattr(r, "width", None),
             height=getattr(r, "height", None),
             weight=getattr(r, "weight", None),
+            cbm=getattr(r, "cbm", None),
 
             attrs_hash_current=getattr(r, "attrs_hash_current", None),
 

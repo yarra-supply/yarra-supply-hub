@@ -127,6 +127,18 @@ async def bulk_finish(
         object_count = int(node.get("objectCount")) if node.get("objectCount") is not None else 0
     except Exception:
         object_count = 0
+
+    try:
+        root_object_count = (
+            int(node.get("rootObjectCount"))
+            if node.get("rootObjectCount") is not None
+            else None
+        )
+    except Exception:
+        root_object_count = None
+
+    if root_object_count is None:
+        root_object_count = object_count
     
 
     # 5) 标记 webhook 到达时间（仅首次）：首次记录 webhook 到达时间（区分 webhook 触发 vs 轮询触发）只在第一次写入
@@ -144,19 +156,32 @@ async def bulk_finish(
 
 
     # 6) 未完成或无 URL：快速返回（5 秒规则），由轮询或后续 webhook 兜底
+    # todo 为什么需要返回objectCount？
     if status != "COMPLETED" or not url:
-        return {"ok": True, "status": status, "objectCount": object_count}
+        return {
+            "ok": True,
+            "status": status,
+            "objectCount": object_count,
+            "rootObjectCount": root_object_count,
+        }
 
 
     # 7) 已完成：将 URL 投递异步任务（下载/解析/入库）
     try:
-        handle_bulk_finish.delay(bulk_id=bulk_gid, url=url, object_count=object_count)
+        handle_bulk_finish.delay(
+            bulk_id=bulk_gid, url=url, root_object_count=root_object_count
+        )
     except Exception:
         pass     # 投递失败也不要影响 200，交由轮询兜底
 
 
     # 丢给 Celery，接口立即返回 200, Shopify 要求 webhook 回调在 5 秒内返回 200
-    return {"ok": True, "status": status, "objectCount": object_count}
+    return {
+        "ok": True,
+        "status": status,
+        "objectCount": object_count,
+        "rootObjectCount": root_object_count,
+    }
 
 
 

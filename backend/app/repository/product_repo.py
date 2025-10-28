@@ -34,7 +34,8 @@ from app.db.model.product import SkuInfo, ProductSyncCandidate, ProductSyncChunk
 SYNC_FIELDS = [
     "sku_code", "brand", "stock_qty", 
     "price", "rrp_price", "special_price", "special_price_end_date", "shopify_price",
-    "weight", "length", "width", "height",
+    "shopify_variant_id",
+    "weight", "length", "width", "height", "cbm",
     "product_tags",
 
     "freight_act", "freight_nsw_m", "freight_nsw_r", "freight_nt_m", "freight_nt_r",
@@ -43,7 +44,6 @@ SYNC_FIELDS = [
     "freight_wa_r", "freight_nz",
     "attrs_hash_current",           # 新增：后续增量/5.3 计算需要
     # "freight_by_zone",              # 若表里没有该列，后续 upsert 会忽略传值
-    # todo 增加其他字段
 ]
 
 
@@ -51,7 +51,7 @@ SYNC_FIELDS = [
 _PRODUCT_EXPORT_COLUMNS = [
     "sku_code", "brand", "stock_qty", 
     "price", "rrp_price", "special_price", "special_price_end_date", "shopify_price",
-    "weight", "length", "width", "height", "product_tags",
+    "weight", "length", "width", "height", "cbm", "product_tags",
     "freight_act", "freight_nsw_m", "freight_nsw_r", "freight_nt_m", "freight_nt_r",
     "freight_qld_m", "freight_qld_r", "remote", "freight_sa_m", "freight_sa_r",
     "freight_tas_m", "freight_tas_r", "freight_vic_m", "freight_vic_r", "freight_wa_m",
@@ -60,6 +60,122 @@ _PRODUCT_EXPORT_COLUMNS = [
 ]
 _PRODUCT_CSV_HEADERS = _PRODUCT_EXPORT_COLUMNS[:]  # 头 = 同名
 
+
+
+# ========= 基础查询：商品 tags & 列表 =========
+def fetch_distinct_product_tags(db: Session) -> List[str]:
+    """
+    查询 sku_info 中所有唯一的 product_tags。
+    结果按照字母顺序返回，忽略空值。
+    """
+    sql = text(
+        """
+        SELECT DISTINCT tag
+          FROM (
+                SELECT NULLIF(trim(elem.tag_value), '') AS tag
+                  FROM sku_info
+                 CROSS JOIN LATERAL jsonb_array_elements_text(product_tags) AS elem(tag_value)
+               ) AS tags
+         WHERE tag IS NOT NULL
+         ORDER BY tag
+        """
+    )
+    return db.execute(sql).scalars().all()
+
+
+def fetch_products_page(
+    db: Session,
+    *,
+    sku_prefix: Optional[str],
+    tags: Optional[List[str]],
+    page: int,
+    page_size: int,
+) -> tuple[List[Dict[str, Any]], int]:
+    """
+    根据筛选条件分页查询 sku_info。
+    返回 (rows, total)；rows 是 dict 列表，字段与 Product 响应模型对齐。
+    """
+    conditions = ["1=1"]
+    params: Dict[str, Any] = {}
+
+    if sku_prefix:
+        conditions.append("sku_code ILIKE :sku_prefix")
+        params["sku_prefix"] = f"{sku_prefix}%"
+
+    tag_values: List[str] = []
+    if tags:
+        tag_values = [t.strip().lower() for t in tags if t and t.strip()]
+        if tag_values:
+            placeholders = []
+            for idx, value in enumerate(tag_values):
+                key = f"tag_{idx}"
+                placeholders.append(f":{key}")
+                params[key] = value
+            conditions.append(
+                f"""
+                EXISTS (
+                    SELECT 1
+                      FROM jsonb_array_elements_text(product_tags) AS elem(tag_value)
+                     WHERE lower(elem.tag_value) IN ({', '.join(placeholders)})
+                )
+                """
+            )
+
+    where_sql = " AND ".join(conditions)
+    base_sql = f"FROM sku_info WHERE {where_sql}"
+
+    total_sql = f"SELECT COUNT(*) {base_sql}"
+    total = db.execute(text(total_sql), params).scalar_one()
+
+    offset = (page - 1) * page_size
+    data_sql = text(
+        f"""
+        SELECT
+            id,
+            sku_code,
+            shopify_variant_id,
+            stock_qty,
+            price,
+            rrp_price,
+            special_price,
+            special_price_end_date,
+            shopify_price,
+            brand,
+            weight,
+            length,
+            width,
+            height,
+            cbm,
+            product_tags,
+            attrs_hash_current,
+            updated_at,
+            freight_act,
+            freight_nsw_m,
+            freight_nsw_r,
+            freight_nt_m,
+            freight_nt_r,
+            freight_qld_m,
+            freight_qld_r,
+            remote,
+            freight_sa_m,
+            freight_sa_r,
+            freight_tas_m,
+            freight_tas_r,
+            freight_vic_m,
+            freight_vic_r,
+            freight_wa_m,
+            freight_wa_r,
+            freight_nz
+          {base_sql}
+         ORDER BY updated_at DESC NULLS LAST, sku_code ASC
+         LIMIT :limit OFFSET :offset
+        """
+    )
+
+    data_params = params.copy()
+    data_params.update({"limit": page_size, "offset": offset})
+    rows = db.execute(data_sql, data_params).mappings().all()
+    return [dict(r) for r in rows], total
 
 
 # ========= 读取 sku 的现有快照 =========
@@ -144,6 +260,12 @@ def diff_snapshot(old: dict|None, new: dict) -> dict:
     # 先比对 attrs_hash_current, 若新旧哈希一致，则直接跳过逐字段对比
     base = old or {}
     if base.get("attrs_hash_current") == new.get("attrs_hash_current"):
+        special = set()
+        for field in ("shopify_variant_id", "shopify_price", "product_tags"):
+            if base.get(field) != new.get(field):
+                special.add(field)
+        if special:
+            return special
         return set()  # 完全一致，省去逐字段比较
 
     changed = set()
@@ -346,12 +468,11 @@ def load_state_freight_by_skus(db: Session, skus: List[str]) -> Dict[str, dict]:
     
     sql = text(f"""
         SELECT
-            sku_code,
+            sku_code, weight, length, width, height, cbm,
             freight_act, freight_nsw_m, freight_nsw_r, freight_qld_m, freight_qld_r,
             freight_sa_m, freight_sa_r, freight_tas_m, freight_tas_r,
             freight_vic_m, freight_vic_r, freight_wa_m, freight_wa_r,
-            remote, freight_nz,
-            weight
+            remote, freight_nz
         FROM sku_info
         WHERE sku_code = ANY(:skus)
     """)
@@ -363,24 +484,26 @@ def load_state_freight_by_skus(db: Session, skus: List[str]) -> Dict[str, dict]:
 
 
 # ---------------- Manifest 封装（pending / running / succeeded / failed）---------------- #
-def upsert_chunk_pending(db: Session, run_id: str, chunk_idx: int, sku_codes: list[str]) -> None:  # [NEW]
+def upsert_chunk_pending(db: Session, run_id: str, chunk_idx: int, sku_codes: list[Any]) -> None:  # [NEW]
     """切片时写入/刷新 manifest 为 pending"""
     if not sku_codes:
         sku_codes = []
-    stmt = insert(ProductSyncChunk).values({
+    sku_count = len(sku_codes)
+    insert_stmt = insert(ProductSyncChunk).values({
         "run_id": run_id,
         "chunk_idx": chunk_idx,
         "status": "pending",
         "sku_codes": sku_codes,
-        "sku_count": len(sku_codes),
+        "sku_count": sku_count,
         "dsz_missing": 0, "dsz_failed_batches": 0, "dsz_failed_skus": 0,
         "dsz_requested_total": 0, "dsz_returned_total": 0,
-    }).on_conflict_do_update(
+    })
+    stmt = insert_stmt.on_conflict_do_update(
         index_elements=["run_id", "chunk_idx"],
         set_={
             "status": "pending",
-            "sku_codes": sa.literal(sku_codes),
-            "sku_count": len(sku_codes),
+            "sku_codes": insert_stmt.excluded.sku_codes,
+            "sku_count": insert_stmt.excluded.sku_count,
             "updated_at": func.now(),
         }
     )

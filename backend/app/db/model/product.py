@@ -41,13 +41,15 @@ class SkuInfo(Base):
     shopify_price:          Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 2))    # Shopify商品页面的 price, 根据dsz配置规则计算出来的
     
     product_tags: Mapped[List[str]]      = mapped_column(JSONB, nullable=False, server_default=text("'[]'::jsonb"))
-    brand:        Mapped[Optional[str]] = mapped_column(String(255))
+    brand:        Mapped[Optional[str]] = mapped_column(String(255))             # 对应 DSZ 的 brand 字段 = shopify？
     weight:       Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 3))
     length:       Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 3))
     width:        Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 3))
     height:       Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 3))
+    cbm:          Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 4))
+    
     ean_code:     Mapped[Optional[str]] = mapped_column(String(255))       # = shopify barcode，传到各个平台，直接用
-    supplier:     Mapped[Optional[str]] = mapped_column(String(255))
+    supplier:     Mapped[Optional[str]] = mapped_column(String(255))       # 数字？ = shopify vendor？都默认 Yarra Supply？
 
     # 运费相关 17个字段
     freight_act:   Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 2))
@@ -227,5 +229,4 @@ class ProductSyncChunk(Base):
         Index("ix_pschunk_run_status_idx", "run_id", "status", "chunk_idx"),
         Index("ix_pschunk_run_idx", "run_id", "chunk_idx"),
     )
-
 

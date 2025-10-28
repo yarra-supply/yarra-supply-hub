@@ -9,6 +9,7 @@ from .dsz_products import (
     DSZProductsAPI,
     get_products_by_skus,
     get_products_by_skus_with_stats,
+    get_zone_rates_by_skus,
 )
 
 from .normalizers import normalize_dsz_product
@@ -21,6 +22,7 @@ from .errors import (
 __all__ = [
     "DSZProductsAPI",
     "get_products_by_skus", "get_products_by_skus_with_stats",
+    "get_zone_rates_by_skus",
     "normalize_dsz_product",
     "DSZError", "DSZAuthError", "DSZClientError", "DSZServerError", "DSZRateLimitError", "DSZPayloadError",
 ]

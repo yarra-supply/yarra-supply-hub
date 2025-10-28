@@ -42,6 +42,16 @@ def get_products_by_skus_with_stats(skus: Iterable[str]) -> Tuple[List[dict], Di
 
 
 
+"""
+ 对外暴露：按 SKU 批量获取 zone rates（仅 sku + standard）
+    调用 /v2/get_zone_rates，按传入 skus（逗号分隔）获取每个 sku 的 'standard' 区域费率。
+    只返回 [{'sku': 'ABC', 'standard': {...}}, ...]
+"""
+def get_zone_rates_by_skus(skus: Iterable[str]) -> List[dict]:
+    api = DSZProductsAPI()
+    return api.fetch_zone_rates_by_skus(skus)
+
+
 
 class DSZProductsAPI:
     """封装 DSZ /v2/products 查询，处理批次拆分、重试和结果统计。"""
@@ -55,6 +65,11 @@ class DSZProductsAPI:
         self.sku_param = settings.DSZ_PRODUCTS_SKU_PARAM    # 默认：skus
         self.payload_sku_field = settings.DSZ_PRODUCTS_SKU_FIELD  # 默认：sku    
         self.method = (settings.DSZ_PRODUCTS_METHOD or "GET").strip().upper()
+
+        # zone rates 端点与限制
+        self.zone_endpoint = settings.DSZ_ZONE_RATES_ENDPOINT           # /v2/get_zone_rates
+        self.zone_limit = int(getattr(settings, "DSZ_ZONE_RATES_LIMIT", 160))  # 硬上限 160
+        self.zone_method = (getattr(settings, "DSZ_ZONE_RATES_METHOD", "POST") or "POST").upper()
     
 
     # test ✅
@@ -249,6 +264,74 @@ class DSZProductsAPI:
             return None
         v = item.get(self.payload_sku_field)
         return v if isinstance(v, str) and v else None    
+    
+
+    # ----------------- /v2/get_zone_rates -----------------
+    """
+        调用 /v2/get_zone_rates。
+        输入：任意 SKU 列表（自动按 160/批拆分）。
+        输出：合并后的 list[{'sku': 'ABC', 'standard': {...}}]
+    """
+    def fetch_zone_rates_by_skus(self, skus: Iterable[str]) -> List[dict]:
+        
+        all_skus = [s.strip() for s in skus if s and s.strip()]
+        if not all_skus:
+            return []
+
+        per_req = max(1, min(self.zone_limit, 160))
+        results: List[dict] = []
+        seen: set[str] = set()
+
+        for chunk in _chunked(all_skus, per_req):
+            body = {"skus": ",".join(chunk), "page_no": 1, "limit": per_req}
+            payload = self.http.post_json(self.zone_endpoint, json_body=body)
+            # 解析 items
+            items = self._extract_zone_rates_items(payload)
+
+            for it in items:
+                sku = (it.get("sku") or "").strip()
+                if not sku:
+                    continue
+                # 只要 sku + standard
+                obj = {"sku": sku, "standard": it.get("standard")}
+                if sku not in seen:
+                    results.append(obj)
+                    seen.add(sku)
+
+        return results
+    
+
+    
+    def _extract_zone_rates_items(self, payload: Any) -> List[dict]:
+        """
+        严格按文档结构解析：
+        {
+          "result": [ { "sku": "...", "standard": {...}, ... }, ... ],
+          "code": 1,
+          ...
+        }
+        """
+        if not isinstance(payload, dict):
+            raise DSZPayloadError("zone_rates payload is not a dict")
+
+        result = payload.get("result")
+        if not isinstance(result, list):
+            raise DSZPayloadError("zone_rates.result is not a list")
+
+        out: List[dict] = []
+        for x in result:
+            if not isinstance(x, dict):
+                continue
+            sku = x.get("sku")
+            if not isinstance(sku, str) or not sku.strip():
+                continue
+            # 保留 whole item，之后取 .get('standard')
+            out.append(x)
+        return out
+
+
+
+
 
 
 # 将任意长度的 SKU 列表按照 size 切分为若干子批。自动跳过空/纯空白字符串

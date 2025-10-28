@@ -38,7 +38,7 @@ def normalize_dsz_product(raw: Dict[str, Any]) -> Dict[str, Any]:
     if supplier:
         out["supplier"] = supplier
 
-    out["stock_qty"] = _to_int(raw.get("in_stock"))
+    out["stock_qty"] = _to_int(raw.get("stock_qty"))
 
     ean = str(raw.get("eancode") or "").strip()
     if ean:
@@ -66,47 +66,79 @@ def normalize_dsz_product(raw: Dict[str, Any]) -> Dict[str, Any]:
     width  = _to_decimal(raw.get("width"), q="0.001")
     height = _to_decimal(raw.get("height"), q="0.001")
     weight = _to_decimal(raw.get("weight"), q="0.001")
+    cbm    = _to_decimal(raw.get("cbm"), q="0.0001")
     if length is not None: out["length"] = length
     if width  is not None: out["width"]  = width
     if height is not None: out["height"] = height
     if weight is not None: out["weight"] = weight
+    if cbm    is not None: out["cbm"]    = cbm
 
     # --- 运费字段（17 项，对齐表里的命名） ---
-    v = _to_decimal(raw.get("ACT"))
-    if v is not None: out["freight_act"] = v
-    v = _to_decimal(raw.get("NSW_M"))
-    if v is not None: out["freight_nsw_m"] = v
-    v = _to_decimal(raw.get("NSW_R"))
-    if v is not None: out["freight_nsw_r"] = v
-    v = _to_decimal(raw.get("QLD_M"))
-    if v is not None: out["freight_qld_m"] = v
-    v = _to_decimal(raw.get("QLD_R"))
-    if v is not None: out["freight_qld_r"] = v
-    v = _to_decimal(raw.get("SA_M"))
-    if v is not None: out["freight_sa_m"] = v
-    v = _to_decimal(raw.get("SA_R"))
-    if v is not None: out["freight_sa_r"] = v
-    v = _to_decimal(raw.get("TAS_M"))
-    if v is not None: out["freight_tas_m"] = v
-    v = _to_decimal(raw.get("TAS_R"))
-    if v is not None: out["freight_tas_r"] = v
-    v = _to_decimal(raw.get("VIC_M"))
-    if v is not None: out["freight_vic_m"] = v
-    v = _to_decimal(raw.get("VIC_R"))
-    if v is not None: out["freight_vic_r"] = v
-    v = _to_decimal(raw.get("WA_M"))
-    if v is not None: out["freight_wa_m"] = v
-    v = _to_decimal(raw.get("WA_R"))
-    if v is not None: out["freight_wa_r"] = v
-    v = _to_decimal(raw.get("NT_M"))
-    if v is not None: out["freight_nt_m"] = v
-    v = _to_decimal(raw.get("NT_R"))
-    if v is not None: out["freight_nt_r"] = v
-    v = _to_decimal(raw.get("NZ"))
-    if v is not None: out["freight_nz"] = v
-    remote = _to_decimal(raw.get("REMOTE"))
-    if remote is not None:
-        out["remote"] = remote
+    # v = _to_decimal(raw.get("ACT"))
+    # if v is not None: out["freight_act"] = v
+    # v = _to_decimal(raw.get("NSW_M"))
+    # if v is not None: out["freight_nsw_m"] = v
+    # v = _to_decimal(raw.get("NSW_R"))
+    # if v is not None: out["freight_nsw_r"] = v
+    # v = _to_decimal(raw.get("QLD_M"))
+    # if v is not None: out["freight_qld_m"] = v
+    # v = _to_decimal(raw.get("QLD_R"))
+    # if v is not None: out["freight_qld_r"] = v
+    # v = _to_decimal(raw.get("SA_M"))
+    # if v is not None: out["freight_sa_m"] = v
+    # v = _to_decimal(raw.get("SA_R"))
+    # if v is not None: out["freight_sa_r"] = v
+    # v = _to_decimal(raw.get("TAS_M"))
+    # if v is not None: out["freight_tas_m"] = v
+    # v = _to_decimal(raw.get("TAS_R"))
+    # if v is not None: out["freight_tas_r"] = v
+    # v = _to_decimal(raw.get("VIC_M"))
+    # if v is not None: out["freight_vic_m"] = v
+    # v = _to_decimal(raw.get("VIC_R"))
+    # if v is not None: out["freight_vic_r"] = v
+    # v = _to_decimal(raw.get("WA_M"))
+    # if v is not None: out["freight_wa_m"] = v
+    # v = _to_decimal(raw.get("WA_R"))
+    # if v is not None: out["freight_wa_r"] = v
+    # v = _to_decimal(raw.get("NT_M"))
+    # if v is not None: out["freight_nt_m"] = v
+    # v = _to_decimal(raw.get("NT_R"))
+    # if v is not None: out["freight_nt_r"] = v
+    # v = _to_decimal(raw.get("NZ"))
+    # if v is not None: out["freight_nz"] = v
+    # remote = _to_decimal(raw.get("REMOTE"))
+    # if remote is not None:
+    #     out["remote"] = remote
+
+
+    #  新接口：/v2/get_zone_rates 返回的 "standard"（小写键）
+    std = raw.get("_zone_standard") or raw.get("standard")
+    if isinstance(std, dict):
+        # 小写字段映射 → 表字段
+        mapping = {
+            "act": "freight_act",
+            "nsw_m": "freight_nsw_m",
+            "nsw_r": "freight_nsw_r",
+            "qld_m": "freight_qld_m",
+            "qld_r": "freight_qld_r",
+            "sa_m": "freight_sa_m",
+            "sa_r": "freight_sa_r",
+            "tas_m": "freight_tas_m",
+            "tas_r": "freight_tas_r",
+            "vic_m": "freight_vic_m",
+            "vic_r": "freight_vic_r",
+            "wa_m": "freight_wa_m",
+            "wa_r": "freight_wa_r",
+            "nt_m": "freight_nt_m",
+            "nt_r": "freight_nt_r",
+            "nz": "freight_nz",
+            "remote": "remote",
+        }
+        for k, out_key in mapping.items():
+            val = _to_decimal(std.get(k))
+            if val is not None:
+                out[out_key] = val
+
 
     # 去掉 None，避免污染 upsert
     return {k: v for k, v in out.items() if v is not None}
