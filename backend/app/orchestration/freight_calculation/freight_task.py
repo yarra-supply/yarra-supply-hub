@@ -42,7 +42,7 @@ def kick_freight_calc( product_run_id: Optional[str] = None, trigger: str = "man
         db.close()
 
     # todo 测试使用
-    freight_calc_run.run(run_id, product_run_id, [], trigger)
+    freight_calc_run.run(run_id, product_run_id, trigger)
 
     # 把 run_id、product_run_id 传下去
     #freight_calc_run.delay(run_id, product_run_id, [])

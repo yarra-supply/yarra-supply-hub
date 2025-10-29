@@ -763,6 +763,7 @@ def iter_price_reset_candidates(
  查询sku_info表，获取产品相关信息（提供给kogan template流程）
      - 读取产品信息，返回 {sku: 字段字典}，字段名尽量与 service 映射需要的 keys 对齐。
      - 这里采用“宽表式”安全取值：即使某些列不存在也不报错（getattr 兜底 None）。
+     - 获取产品信息: sku, rrp, ean_code, stock_qty, brand, sku2? 
 """
 def load_products_map(db: Session, skus: List[str]) -> Dict[str, Dict[str, object]]:
     if not skus:
@@ -777,19 +778,11 @@ def load_products_map(db: Session, skus: List[str]) -> Dict[str, Dict[str, objec
     out: Dict[str, Dict[str, object]] = {}
     for r in rows:
         out[r.sku_code] = {
-            "price": getattr(r, "price", None),
-            "rrp": getattr(r, "rrp", None),
-            "kogan_first_price": getattr(r, "kogan_first_price", None),
-            "handling_days": getattr(r, "handling_days", None),
-            "barcode": getattr(r, "barcode", None),
-            "stock": getattr(r, "stock", None),
-            "weight": getattr(r, "weight", None),
+            # "sku": getattr(r, "sku_code", None),
+            "rrp": getattr(r, "rrp_price", None),
+            "barcode": getattr(r, "ean_code", None),
+            "stock": getattr(r, "stock_qty", None),
             "brand": getattr(r, "brand", None),
-            "title": getattr(r, "title", None),
-            "description": getattr(r, "description", None),
-            "subtitle": getattr(r, "subtitle", None),
-            "whats_in_the_box": getattr(r, "whats_in_the_box", None),
-            "category": getattr(r, "category", None),
         }
     return out
 logger = logging.getLogger(__name__)

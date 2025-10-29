@@ -42,7 +42,7 @@ class KoganTemplate(Base):
     handling_days: Mapped[Optional[int]]  = mapped_column(Integer, nullable=True)
     barcode:       Mapped[Optional[str]]  = mapped_column(String(128), nullable=True)
     stock:         Mapped[Optional[int]]  = mapped_column(Integer, nullable=True)
-    shipping:      Mapped[Optional[str]]  = mapped_column(String(128), nullable=True)
+    shipping:      Mapped[Optional[str]]  = mapped_column(String(128), nullable=True)       # shipping type：运费计算表转换 值：variable-其他？，0-FreeShipping, NZ: 都是0
 
     weight:        Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 3), nullable=True)
     brand:         Mapped[Optional[str]]     = mapped_column(String(128), nullable=True)

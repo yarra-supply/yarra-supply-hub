@@ -64,6 +64,7 @@ class SkuFreightFee(Base):
             "sku_code",
             postgresql_where=text("kogan_dirty = true")
         ),
+        Index("ix_kogan_sku_freight_fee_shipping_type", "shipping_type"),
     )
 
 

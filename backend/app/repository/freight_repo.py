@@ -17,6 +17,123 @@ from app.utils.attrs_hash import FREIGHT_HASH_FIELDS             # 作为“运�
 FREIGHT_RELEVANT_FIELDS: set[str] = set(FREIGHT_HASH_FIELDS)
 
 
+"""针对前端运费列表的查询方法"""
+def fetch_shipping_types(db: Session) -> List[str]:
+    """
+    从 kogan_sku_freight_fee 表中查询去重后的 shipping_type。
+    仅返回非空值，并按字母顺序排序。
+    """
+    sql = text(
+        """
+        SELECT DISTINCT shipping_type
+          FROM kogan_sku_freight_fee
+         WHERE shipping_type IS NOT NULL
+           AND trim(shipping_type) <> ''
+         ORDER BY shipping_type
+        """
+    )
+    return db.execute(sql).scalars().all()
+
+
+def fetch_freight_results_page(
+    db: Session,
+    *,
+    sku_prefix: Optional[str],
+    tags: Optional[List[str]],
+    shipping_types: Optional[List[str]],
+    page: int,
+    page_size: int,
+) -> tuple[List[Dict[str, Any]], int]:
+    """
+    根据筛选条件分页查询运费结果。
+    返回 (rows, total)，其中 rows 是字段名与前端展示保持一致的字典列表。
+    """
+
+    conditions: List[str] = ["1=1"]
+    params: Dict[str, Any] = {}
+
+    if sku_prefix:
+        conditions.append("f.sku_code ILIKE :sku_prefix")
+        params["sku_prefix"] = f"{sku_prefix}%"
+
+    if shipping_types:
+        values = [s.strip() for s in shipping_types if s and s.strip()]
+        if values:
+            placeholders: List[str] = []
+            for idx, value in enumerate(values):
+                key = f"st_{idx}"
+                placeholders.append(f":{key}")
+                params[key] = value
+            conditions.append(f"f.shipping_type IN ({', '.join(placeholders)})")
+
+    if tags:
+        lowered = [t.strip().lower() for t in tags if t and t.strip()]
+        if lowered:
+            placeholders: List[str] = []
+            for idx, value in enumerate(lowered):
+                key = f"tag_{idx}"
+                placeholders.append(f":{key}")
+                params[key] = value
+            conditions.append(
+                f"""
+                EXISTS (
+                    SELECT 1
+                      FROM jsonb_array_elements_text(si.product_tags) AS elem(tag_value)
+                     WHERE lower(elem.tag_value) IN ({', '.join(placeholders)})
+                )
+                """
+            )
+
+    where_sql = " AND ".join(conditions)
+    base_sql = f"""
+        FROM kogan_sku_freight_fee AS f
+        LEFT JOIN sku_info AS si ON si.sku_code = f.sku_code
+       WHERE {where_sql}
+    """
+
+    total_sql = text(f"SELECT COUNT(*) {base_sql}")
+    total = db.execute(total_sql, params).scalar_one()
+
+    offset = (page - 1) * page_size
+    data_sql = text(
+        f"""
+        SELECT
+            f.sku_code,
+            f.shipping_type,
+            f.adjust,
+            f.same_shipping,
+            f.shipping_ave,
+            f.shipping_ave_m,
+            f.shipping_ave_r,
+            f.shipping_med,
+            f.shipping_med_dif,
+            f.remote_check,
+            f.rural_ave,
+            f.weighted_ave_s,
+            f.cubic_weight,
+            f.weight,
+            f.price_ratio,
+            f.selling_price,
+            f.shopify_price,
+            f.kogan_au_price,
+            f.kogan_k1_price,
+            f.kogan_nz_price,
+            f.updated_at,
+            COALESCE(si.product_tags, '[]'::jsonb) AS product_tags,
+            si.price AS cost
+          {base_sql}
+         ORDER BY f.updated_at DESC NULLS LAST, f.sku_code ASC
+         LIMIT :limit OFFSET :offset
+        """
+    )
+
+    data_params = params.copy()
+    data_params.update({"limit": page_size, "offset": offset})
+    rows = db.execute(data_sql, data_params).mappings().all()
+
+    return [dict(row) for row in rows], total
+
+
 
 """
 轻量输入结构：与 app.services.freight_compute 里的 FreightInputs 字段保持一致。
@@ -292,21 +409,27 @@ def filter_need_recalc(db: Session, skus: List[str]) -> List[str]:
 
 """
 提供给template流程
-读取运费结果，返回 {sku: {shipping_ave, cubic_weight, ...}}。
+读取运费结果，返回 {sku: {sku, kogan_au_price, kogan first price, shipping, weight(update后的)}}
 """
 def load_freight_map(db: Session, skus: List[str]) -> Dict[str, Dict[str, object]]:
-
     if not skus:
         return {}
+    
     rows: List[SkuFreightFee] = (
         db.query(SkuFreightFee)
         .filter(SkuFreightFee.sku_code.in_(skus))
         .all()
     )
+
     out: Dict[str, Dict[str, object]] = {}
     for r in rows:
         out[r.sku_code] = {
+            # "sku": r.sku_code,
+            "kogan_au_price": getattr(r, "kogan_au_price", None),
+            "kogan_k1_price": getattr(r, "kogan_k1_price", None),
+            "kogan_nz_price": getattr(r, "kogan_nz_price", None),
             "shipping_ave": getattr(r, "shipping_ave", None),
-            "cubic_weight": getattr(r, "cubic_weight", None),
+            "weight": getattr(r, "weight", None),
+            # "cubic_weight": getattr(r, "cubic_weight", None),
         }
     return out

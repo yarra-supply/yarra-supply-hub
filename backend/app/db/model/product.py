@@ -84,6 +84,7 @@ class SkuInfo(Base):
         Index("idx_sku_info_last_changed_at", "last_changed_at"),
         Index("idx_sku_info_variant_id", "shopify_variant_id"),
         Index("idx_sku_info_special_end", "special_price_end_date"),
+        Index("gin_sku_info_product_tags", product_tags, postgresql_using="gin"),
     )
 
 
@@ -229,4 +230,3 @@ class ProductSyncChunk(Base):
         Index("ix_pschunk_run_status_idx", "run_id", "status", "chunk_idx"),
         Index("ix_pschunk_run_idx", "run_id", "chunk_idx"),
     )
-

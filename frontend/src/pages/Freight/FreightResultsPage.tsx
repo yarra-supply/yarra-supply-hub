@@ -102,7 +102,6 @@ export default function FreightResultsPage() {
         return list.length ? list.map(t => <AntTag key={t}>{t}</AntTag>) : '-';
       },
     },
-    { title: 'Weight', dataIndex: 'udpate_weight', width: 100 },
     
     { title: 'Shipping Type', dataIndex: 'shipping_type', width: 120 },
     { title: 'Adjust', dataIndex: 'adjust', width: 100, render: (v) => v == null ? '-' : Number(v).toFixed(2) },
@@ -114,19 +113,19 @@ export default function FreightResultsPage() {
     { title: 'Remote_Check', dataIndex: 'remote_check', width: 100, 
       render: (v?: boolean) => v === true ? 'Yes' : v === false ? 'No' : '-' },
 
-
     { title: 'Rural_Ave', dataIndex: 'rural_ave', width: 100 },
     { title: 'WeightedAveS', dataIndex: 'weighted_ave_s', width: 100 },
     { title: 'Shipping_Med_Diff', dataIndex: 'shipping_med_dif', width: 120 },
 
     { title: 'CubicWt', dataIndex: 'cubic_weight', width: 100 },
+    { title: 'UpdateWeight', dataIndex: 'weight', width: 100 },
     
     { title: 'Selling Price', dataIndex: 'selling_price', width: 120 },
     { title: 'Shopify Price', dataIndex: 'shopify_price', width: 140 },
     { title: 'Kogan AU Price', dataIndex: 'kogan_au_price', width: 140 },
     { title: 'Kogan K1 Price', dataIndex: 'kogan_k1_price', width: 140 },
     { title: 'Kogan NZ Price', dataIndex: 'kogan_nz_price', width: 140 },
-
+    { title: 'Price Ratio', dataIndex: 'price_ratio', width: 120, render: v => v == null ? '-' : Number(v).toFixed(4) },
     
     { title: 'Updated', dataIndex: 'updated_at', width: 150,
       render: v => v ? dayjs(v).format('YYYY-MM-DD HH:mm') : '-' },
@@ -239,7 +238,7 @@ export default function FreightResultsPage() {
         columns={columns}
         dataSource={data?.items || []}
         pagination={pagination}
-        scroll={{ x: 1200 }}
+        scroll={{ x: 1400 }}
       />
     </Space>
   );

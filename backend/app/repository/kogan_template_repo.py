@@ -12,7 +12,6 @@ from app.db.model.kogan_au_template import KoganTemplate
 
 """
 分页迭代待导出的 运费结果表中本次更新/新增的运费结果：
-
     以批次形式迭代返回“需要导出的 SKU 列表”。
     - 当 only_dirty=True：WHERE kogan_dirty=true
     - 当提供 freight_run_id：WHERE last_changed_run_id=...
@@ -58,9 +57,4 @@ def load_kogan_baseline_map(db: Session, country_type: str, skus: List[str]) -> 
     )
     return {r.sku: r for r in rows}
 
-
-# todo 怎么用？
-def _chunker(items: List[str], size: int) -> Iterator[List[str]]:
-    for i in range(0, len(items), size):
-        yield items[i : i + size]
 

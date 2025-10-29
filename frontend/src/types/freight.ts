@@ -6,6 +6,7 @@ export interface FreightResult {
   sku_code: string;
   zone?: string | null;
   shipping_type?: string;   // 0, 1, 10, 15, 20, Extra2/3/4/5 等
+  weight?: number | null;
   adjust?: number | null;  // 调整费（派生）
   same_shipping?: number | null;
   shipping_ave?: number | null;
@@ -18,11 +19,13 @@ export interface FreightResult {
   cubic_weight?: number | null;   // 体积重
   remote_check?: boolean | null;  // 1 表示偏远不送（9999）
   cost?: number | null;
+  price_ratio?: number | null;
   selling_price?: number | null;
   shopify_price?: number | null;
   kogan_au_price?: number | null;
   kogan_k1_price?: number | null;
   kogan_nz_price?: number | null;
+  tag?: string | null;
   tags?: string[] | null; // 多值
   updated_at?: string | null;
 }

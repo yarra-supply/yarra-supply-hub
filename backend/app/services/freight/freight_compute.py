@@ -247,12 +247,12 @@ def compute_weighted_ave_s(
 def compute_shipping_med_dif(
         fr: Dict[str, Optional[float]], shipping_med: Optional[Decimal]) -> Optional[Decimal]:
     """
-    ShippingMedDif：max(REMOTE - ShippingMed, WA_M - ShippingMed)
+    ShippingMedDif：max(REMOTE - ShippingMed, WA_R - ShippingMed)
     """
     if shipping_med is None: return None
     remote = _d(fr.get("REMOTE"))
-    wa_m = _d(fr.get("WA_M"))
-    diffs = [v - shipping_med for v in (remote, wa_m) if v is not None]
+    wa_r = _d(fr.get("WA_R"))
+    diffs = [v - shipping_med for v in (remote, wa_r) if v is not None]
 
     if not diffs: return None
     return max(diffs)
