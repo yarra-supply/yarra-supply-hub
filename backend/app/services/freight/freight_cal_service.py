@@ -29,6 +29,7 @@ _RESULT_COLS = [
     "shipping_med_dif",
     "weight",
     "cubic_weight",
+    "price_ratio",
     "shipping_type",
     "selling_price",
     "shopify_price",
@@ -59,6 +60,8 @@ def _map_outputs_to_row(sku: str, out: FreightOutputs, attrs_hash_current: Optio
         "weighted_ave_s": getattr(out, "weighted_ave_s", None),
         "shipping_med_dif": getattr(out, "shipping_med_dif", None),
         "cubic_weight": out.cubic_weight,
+        "weight": getattr(out, "weight", None),
+        "price_ratio": getattr(out, "price_ratio", None),
         "shipping_type": getattr(out, "shipping_type", None),
         "selling_price": getattr(out, "selling_price", None),
         "shopify_price": getattr(out, "shopify_price", None),
@@ -87,6 +90,7 @@ def process_batch_compute_and_persist(
     skus: List[str],
     freight_run_id: str,
     cfg: Optional[Dict[str, Any]] = None,
+    trigger: str = "manual"
 ) -> int:
 
     if not skus:
@@ -122,7 +126,7 @@ def process_batch_compute_and_persist(
         if changed_fields:
             #  Kogan 导出标记 
             row["last_changed_run_id"] = freight_run_id
-            row["last_changed_source"] = "full_sync"
+            row["last_changed_source"] = trigger
             row["last_changed_at"] = datetime.now(timezone.utc)
             row["kogan_dirty"] = True
             to_upsert.append(row)

@@ -33,6 +33,7 @@ class SkuFreightFee(Base):
     weight:           Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 2))   # 重新计算weight, 结果用于更新metafields的 + 添加到kogan上传表格上面
     cubic_weight:     Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 3))   # 体积重 (长*宽*高/6000)
     shipping_type:    Mapped[Optional[str]]   = mapped_column(String(24))         # 运费类型（0: FreeShipping, 1: Kogan 平台计算）
+    price_ratio:      Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 4))   # RuralAve / Price 比值
 
     selling_price:    Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 2))   # 售价（有效售价或原价）,有 Special Price 用 Special, 否则用 regular price
     shopify_price:    Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 2))   # Shopify 价格（Selling Price 加固定加价）, 根据DSZ配置的shopify规则计算的
@@ -42,7 +43,7 @@ class SkuFreightFee(Base):
 
     # —— 幂等&选择性重算 —— 
     # 表示上一次成功完成运费计算时那一刻入参字段的哈希（与 sku_info.attrs_hash_current 对比）成功后回写 last_calc := current
-    attrs_hash_last_calc: Mapped[Optional[str]] = mapped_column(String(32))
+    attrs_hash_last_calc: Mapped[Optional[str]] = mapped_column(String(128))
 
     # === 给 Kogan 导出用的变化标记 ===
     last_changed_run_id: Mapped[Optional[str]] = mapped_column(String(32), index=True, nullable=True)   # 关联freight_run_id 精准取本次产生变化的数据, String(32)，与 FreightRun.id 一致
@@ -82,12 +83,12 @@ class FreightRun(Base):
         nullable=False, default="pending"
     )
 
-    triggered_by:      Mapped[Optional[str]] = mapped_column(String(32))          #触发来源（auto/manual/post-5.1 等），用于审计。
-    total_batches:     Mapped[int]           = mapped_column(Integer, default=0)  # 本次预计要处理的分批数量（kick 阶段计算）
-    finished_batches:  Mapped[int]           = mapped_column(Integer, default=0)  # 已完成的批次数（可以在 finalize 时累加）。
-    rows_in:           Mapped[int]           = mapped_column(Integer, default=0)  # 纳入本次计算的行数（候选 SKU 数）
-    rows_changed:      Mapped[int]           = mapped_column(Integer, default=0)  # 最终实际计算后确实发生变更并写入结果表的行数（幂等视角 KPI）。
-    error_summary:     Mapped[Optional[str]] = mapped_column(Text)    # 错误摘要（堆栈简化/最常见 SQLState、超时计数），用于排障。
+    triggered_by:   Mapped[Optional[str]] = mapped_column(String(32))          # 触发来源（auto/manual/post-5.1 等），用于审计。
+    product_run_id: Mapped[Optional[str]] = mapped_column(String(36), index=True)  # 关联 product_sync_runs.id（UUID 字符串）
+    candidate_count: Mapped[int] = mapped_column(Integer, default=0)          # 候选 SKU 数
+    changed_count:   Mapped[int] = mapped_column(Integer, default=0)          # 实际发生变更的 SKU 数
+    message:         Mapped[Optional[str]] = mapped_column(Text)              # 说明或失败信息
+    finished_at:     Mapped[Optional[object]] = mapped_column(DateTime(timezone=True))  # 完成时间（成功/失败）
 
     created_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

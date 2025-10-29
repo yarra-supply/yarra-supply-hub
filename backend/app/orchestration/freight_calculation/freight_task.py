@@ -42,7 +42,7 @@ def kick_freight_calc( product_run_id: Optional[str] = None, trigger: str = "man
         db.close()
 
     # todo 测试使用
-    freight_calc_run.run(run_id, product_run_id, [])
+    freight_calc_run.run(run_id, product_run_id, [], trigger)
 
     # 把 run_id、product_run_id 传下去
     #freight_calc_run.delay(run_id, product_run_id, [])
@@ -66,7 +66,7 @@ def freight_calc_run(
     self, 
     freight_run_id: str, 
     product_run_id: Optional[str],
-    candidate_skus: List[str]
+    trigger: str
 ):
 
     db: Session = SessionLocal()  
@@ -108,7 +108,7 @@ def freight_calc_run(
             batch = target_skus[i:i + BATCH_SIZE]
 
             # 运费计算 + DB更新
-            changed = process_batch_compute_and_persist(db, batch, freight_run_id, cfg=cfg)
+            changed = process_batch_compute_and_persist(db, batch, freight_run_id, cfg=cfg, trigger=trigger)
             if changed:
                 db.commit()      # ← 第N次事务提交（小步提交）
 

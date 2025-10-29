@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.db.model.product import SkuInfo, ProductSyncCandidate   # 商品信息表
 from app.db.model.freight import SkuFreightFee, FreightRun
+from app.services.freight.freight_compute import FreightInputs
 # from app.db.model.shopify_jobs import ShopifyUpdateJob           # 待派发到同步shopify的作业表
 
 from app.utils.attrs_hash import FREIGHT_HASH_FIELDS             # 作为“运费相关字段集合
@@ -20,15 +21,6 @@ FREIGHT_RELEVANT_FIELDS: set[str] = set(FREIGHT_HASH_FIELDS)
 """
 轻量输入结构：与 app.services.freight_compute 里的 FreightInputs 字段保持一致。
 这里不做运算，仅承载数据（为了避免 repo 依赖 service）。
-"""
-class FreightInputs:
-    def __init__(self, **kwargs):
-        for k, v in kwargs.items():
-            setattr(self, k, v)
-
-
-
-"""
 feature: 候选 SKU 读取
 从 product_sync_candidates 读取“与运费计算相关字段有变化”的 sku 列表（去重）。
    - change_mask 若是数组：直接集合相交；若是 JSONB：改成 contains/has_any 判断即可。

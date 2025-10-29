@@ -42,9 +42,9 @@ class FreightCalcConfig(Base):
     med_dif_20:       Mapped[Decimal] = mapped_column(Numeric(10, 4), nullable=False, default=20.0)
     med_dif_40:       Mapped[Decimal] = mapped_column(Numeric(10, 4), nullable=False, default=40.0)
     same_shipping_0:  Mapped[Decimal] = mapped_column(Numeric(10, 4), nullable=False, default=0.0)
-    same_shipping_10: Mapped[Decimal] = mapped_column(Numeric(10, 4), nullable=False, default=10.0)
-    same_shipping_20: Mapped[Decimal] = mapped_column(Numeric(10, 4), nullable=False, default=20.0)
-    same_shipping_30: Mapped[Decimal] = mapped_column(Numeric(10, 4), nullable=False, default=30.0)
+    same_shipping_10: Mapped[Decimal] = mapped_column(Numeric(10, 4), nullable=False, default=10.1)
+    same_shipping_20: Mapped[Decimal] = mapped_column(Numeric(10, 4), nullable=False, default=20.1)
+    same_shipping_30: Mapped[Decimal] = mapped_column(Numeric(10, 4), nullable=False, default=30.1)
     same_shipping_50: Mapped[Decimal] = mapped_column(Numeric(10, 4), nullable=False, default=50.0)
     same_shipping_100: Mapped[Decimal] = mapped_column(Numeric(10, 4), nullable=False, default=100.0)
 

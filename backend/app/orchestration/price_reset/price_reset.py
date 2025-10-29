@@ -128,23 +128,23 @@ def _process_batch(
         inputs = FCInputs(
             price=price,
             special_price=None,  # 忽略 special，强制还原
-            state_freight={
-                "ACT":    one_product.get("freight_act"),
-                "NSW_M":  one_product.get("freight_nsw_m"),
-                "NSW_R":  one_product.get("freight_nsw_r"),
-                "QLD_M":  one_product.get("freight_qld_m"),
-                "QLD_R":  one_product.get("freight_qld_r"),
-                "SA_M":   one_product.get("freight_sa_m"),
-                "SA_R":   one_product.get("freight_sa_r"),
-                "TAS_M":  one_product.get("freight_tas_m"),
-                "TAS_R":  one_product.get("freight_tas_r"),
-                "VIC_M":  one_product.get("freight_vic_m"),
-                "VIC_R":  one_product.get("freight_vic_r"),
-                "WA_M":   one_product.get("freight_wa_m"),
-                "WA_R":   one_product.get("freight_wa_r"),
-                "REMOTE": one_product.get("remote"),
-                "NZ":     one_product.get("freight_nz"),
-            },
+            act=one_product.get("freight_act"),
+            nsw_m=one_product.get("freight_nsw_m"),
+            nsw_r=one_product.get("freight_nsw_r"),
+            qld_m=one_product.get("freight_qld_m"),
+            qld_r=one_product.get("freight_qld_r"),
+            sa_m=one_product.get("freight_sa_m"),
+            sa_r=one_product.get("freight_sa_r"),
+            tas_m=one_product.get("freight_tas_m"),
+            tas_r=one_product.get("freight_tas_r"),
+            vic_m=one_product.get("freight_vic_m"),
+            vic_r=one_product.get("freight_vic_r"),
+            wa_m=one_product.get("freight_wa_m"),
+            wa_r=one_product.get("freight_wa_r"),
+            nt_m=one_product.get("freight_nt_m"),
+            nt_r=one_product.get("freight_nt_r"),
+            remote=one_product.get("remote"),
+            nz=one_product.get("freight_nz"),
             weight=_as_float(one_product.get("weight")),
             cbm=None,  # 如需体积重可在此补充
         )
@@ -193,5 +193,4 @@ def _q2(val) -> Optional[Decimal]:
     if val is None:
         return None
     return Decimal(val).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-
 
