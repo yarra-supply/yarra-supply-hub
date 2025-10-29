@@ -1,5 +1,6 @@
 """Integration-style entry point for debugging the freight calculation pipeline."""
 
+import uuid
 import pytest
 from sqlalchemy import text
 
@@ -25,7 +26,7 @@ def test_kick_freight_calc_full_flow():
         pytest.skip("Database connection is not available for freight task integration test")
 
     print("[debug] running kick_freight_calc with inline execution")
-    result = freight_task.kick_freight_calc.run(product_run_id=None, trigger="test-debug")
+    result = freight_task.kick_freight_calc.run(product_run_id="82ac1975-65ed-47f9-afad-abcaecaab700", trigger="test-debug")
 
     print("[debug] kick_freight_calc result", result)
     assert isinstance(result, dict)

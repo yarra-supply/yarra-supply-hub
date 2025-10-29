@@ -17,6 +17,8 @@ FREIGHT_HASH_FIELDS = (
     "price", "special_price", "special_price_end_date",  # 价格（含促销有效性）
     
     "length", "width", "height", "weight",          # 尺寸/重量, CBM不使用，都用 L*W*H/1,000,000 计算
+
+    # cbm加不加？
     
     "freight_act",                                  # 运费（含 NZ、REMOTE；NT 做兼容保留）
     "freight_nsw_m", "freight_nsw_r",

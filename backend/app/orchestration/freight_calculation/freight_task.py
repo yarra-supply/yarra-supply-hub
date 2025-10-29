@@ -80,7 +80,8 @@ def freight_calc_run(
             # 为了幂等/去重，再次做哈希过滤更稳妥
             #target_skus = filter_need_recalc(db, target_skus)
         else: 
-            # 无 run_id：兜底/手动触发，按“哈希差异”做增量筛选（只算“确实变了”的 SKU）         
+            # 无 run_id：兜底/手动触发，按“哈希差异”做增量筛选（只算“确实变了”的 SKU）
+            # test 分支         
             subq = db.query(SkuInfo.sku_code).all()
             all_skus = [r.sku_code for r in subq]
             # sku_info.attrs_hash_current ≠ kogan_sku_freight_fee.attrs_hash_last_calc 做增量筛选，只算确实变了的SKU
