@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 
 from sqlalchemy.orm import Session
 from app.db.session import SessionLocal
+from app.db.model.user import User
 from app.services.kogan_template_service import (
     ExportJobNotFoundError,
     NoDirtySkuError,
@@ -50,14 +51,14 @@ def _format_melbourne(dt: datetime | None) -> str:
 def create_kogan_template_export(
     country_type: str = Query(..., regex="^(AU|NZ)$", description="AU or NZ"),
     db: Session = Depends(get_db),
-    current_user: dict = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
 ):
     try:
         job = create_kogan_export_job(
             db=db,
             country_type=country_type,
-            # created_by=(current_user or {}).get("id"),
-            created_by=None,
+            created_by=current_user.id,
+            # created_by=None,
         )
     except NoDirtySkuError as exc:
         return {
@@ -81,7 +82,7 @@ def create_kogan_template_export(
 def download_kogan_template_diff_csv(
     job_id: str,
     db: Session = Depends(get_db),
-    current_user: dict = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
 ):
     try:
         job = get_export_job_file(db, job_id)
@@ -116,7 +117,7 @@ def download_kogan_template_diff_csv(
 def download_export_job(
     job_id: str,
     db: Session = Depends(get_db),
-    current_user: dict = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
 ):
     try:
         job = get_export_job_file(db, job_id)
@@ -150,14 +151,14 @@ def download_export_job(
 def apply_kogan_export(
     job_id: str,
     db: Session = Depends(get_db),
-    current_user: dict = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
 ):
     try:
         job = apply_export_job(
             db=db,
             job_id=job_id,
-            # applied_by=(current_user or {}).get("id"),
-            applied_by=None,
+            applied_by=current_user.id,
+            # applied_by=None,
         )
     except ExportJobNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
