@@ -67,6 +67,12 @@ def load_kogan_baseline_map(db: Session, country_type: str, skus: List[str]) -> 
 
 
 
+def _generate_job_id(country_type: str) -> str:
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    suffix = uuid.uuid4().hex[:8]
+    return f"{country_type}_{ts}_{suffix}"
+
+
 
 '''
 创建一条 KoganExportJob 记录及其关联的 KoganExportJobSku 记录
@@ -83,6 +89,7 @@ def create_export_job(
 ) -> KoganExportJob:
     
     job = KoganExportJob(
+        id=_generate_job_id(country_type),
         country_type=country_type,
         status=ExportJobStatus.EXPORTED,
         file_name=file_name,
@@ -115,7 +122,7 @@ def create_export_job(
 
 
 # 获取导出任务及其文件内容；找不到则抛错
-def get_export_job(db: Session, job_id: uuid.UUID) -> Optional[KoganExportJob]:
+def get_export_job(db: Session, job_id: str) -> Optional[KoganExportJob]:
     return (
         db.query(KoganExportJob)
         .options(selectinload(KoganExportJob.skus))

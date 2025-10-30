@@ -1,6 +1,5 @@
 
 from __future__ import annotations
-import uuid
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence
 from datetime import datetime, timezone
@@ -150,7 +149,7 @@ def create_kogan_export_job(
 
 
 # 获取导出任务及其文件内容；找不到则抛错
-def get_export_job_file(db: Session, job_id: uuid.UUID) -> KoganExportJob:
+def get_export_job_file(db: Session, job_id: str) -> KoganExportJob:
     job = get_export_job(db, job_id)
     
     if job is None:
@@ -162,7 +161,7 @@ def get_export_job_file(db: Session, job_id: uuid.UUID) -> KoganExportJob:
 def apply_export_job(
     db: Session,
     *,
-    job_id: uuid.UUID,
+    job_id: str,
     applied_by: Optional[int],
 ) -> KoganExportJob:
     job = get_export_job(db, job_id)
@@ -378,7 +377,7 @@ _NUMERIC_TYPES = (int, float, Decimal)
 """
 给定一个 SKU, 把产品信息 + 运费结果 映射为一整行 Kogan CSV 字段。
     - Price: 优先使用运费结果表里的 Kogan 价格（AU/NZ），否则退回到 sku_info.price；
-    - Shipping: AU 中 shipping_ave 为 0 时写 0，否则写 "variable"；NZ 固定写 0；
+    - Shipping: 运费类型为 Extra3/4/5 → 填 "variable"；其余类型填 "0"；
     - Weight: 优先运费结果里的 weight，其次 sku_info.weight，最后 cubic_weight；
     - return : sku, kogan_au_price, rrp, kogan first price, handing days, ean_code, stock_qty, shipping_type, weight(update后的), brand, sku2? 
 """
@@ -398,28 +397,13 @@ def _map_to_kogan_csv_row(
     price_key = "kogan_au_price" if country_type == "AU" else "kogan_nz_price"
     price_val = g(freight_row, price_key) or g(product_row, "price")
 
-    #2 shipping 
-    shipping_raw = g(freight_row, "shipping_type")
-    if country_type == "AU":
-        if shipping_raw is None:
-            shipping_val = None
-        elif _is_zero(shipping_raw):
-            shipping_val = _zero_like(shipping_raw)
-        else:
-            shipping_val = "variable"
-    else:  # NZ
-        shipping_val = Decimal("0")
-
-    # shipping_raw = g(freight_row, "shipping_ave")
-    # if country_type == "AU":
-    #     if shipping_raw is None:
-    #         shipping_val = None
-    #     elif _is_zero(shipping_raw):
-    #         shipping_val = _zero_like(shipping_raw)
-    #     else:
-    #         shipping_val = shipping_raw
-    # else:  # NZ
-    #     shipping_val = Decimal("0")
+    #2 shipping
+    shipping_type = g(freight_row, "shipping_type")
+    shipping_type_normalized = shipping_type.lower() if isinstance(shipping_type, str) else ""
+    if shipping_type_normalized in {"extra3", "extra4", "extra5"}:
+        shipping_val = "variable"
+    else:
+        shipping_val = "0"
 
 
     row = {

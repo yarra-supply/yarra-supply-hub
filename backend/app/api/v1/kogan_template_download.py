@@ -1,6 +1,5 @@
 
 from __future__ import annotations
-import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 
@@ -43,6 +42,7 @@ def create_kogan_template_export(
         job = create_kogan_export_job(
             db=db,
             country_type=country_type,
+            # created_by=(current_user or {}).get("id"),
             created_by=None,
         )
     except NoDirtySkuError as exc:
@@ -60,7 +60,7 @@ def create_kogan_template_export(
 """根据 job_id 下载已生成的 CSV。"""
 @router.get("/kogan-template/download")
 def download_kogan_template_diff_csv(
-    job_id: uuid.UUID,
+    job_id: str,
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user),
 ):
@@ -91,7 +91,7 @@ def download_kogan_template_diff_csv(
 '''
 @router.get("/kogan-template/export/{job_id}/download")
 def download_export_job(
-    job_id: uuid.UUID,
+    job_id: str,
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user),
 ):
@@ -121,7 +121,7 @@ def download_export_job(
 '''
 @router.post("/kogan-template/export/{job_id}/apply")
 def apply_kogan_export(
-    job_id: uuid.UUID,
+    job_id: str,
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user),
 ):
@@ -129,7 +129,8 @@ def apply_kogan_export(
         job = apply_export_job(
             db=db,
             job_id=job_id,
-            applied_by=current_user.get("id"),
+            # applied_by=(current_user or {}).get("id"),
+            created_by=None,
         )
     except ExportJobNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc

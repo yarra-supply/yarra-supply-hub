@@ -49,7 +49,7 @@ def upgrade() -> None:
 
     op.create_table(
         'kogan_export_jobs',
-        sa.Column('id', postgresql.UUID(as_uuid=True), primary_key=True, nullable=False),
+        sa.Column('id', sa.String(length=64), primary_key=True, nullable=False),
         sa.Column('country_type', country_enum, nullable=False),
         sa.Column('status', status_enum, nullable=False, server_default=STATUS_VALUES[0]),
         sa.Column('file_name', sa.String(length=255), nullable=False),
@@ -68,7 +68,7 @@ def upgrade() -> None:
     op.create_table(
         'kogan_export_job_skus',
         sa.Column('id', sa.Integer(), primary_key=True, autoincrement=True),
-        sa.Column('job_id', postgresql.UUID(as_uuid=True), sa.ForeignKey('kogan_export_jobs.id', ondelete='CASCADE'), nullable=False),
+        sa.Column('job_id', sa.String(length=64), sa.ForeignKey('kogan_export_jobs.id', ondelete='CASCADE'), nullable=False),
         sa.Column('sku', sa.String(length=128), nullable=False),
         sa.Column('template_payload', postgresql.JSONB(astext_type=sa.Text()), nullable=False),
         sa.Column('changed_columns', postgresql.JSONB(astext_type=sa.Text()), nullable=False),

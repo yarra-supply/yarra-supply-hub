@@ -26,7 +26,7 @@ from app.db.model.product import SkuInfo
 from app.db.session import SessionLocal
 
 
-FAKE_USER = {"id": 12001, "username": "integration-debug"}
+FAKE_USER = {"username": "integration-debug"}
 
 
 def _db_ready() -> bool:
@@ -39,17 +39,17 @@ def _db_ready() -> bool:
         return False
 
 
-# def _cleanup(db, sku: str, job_id: uuid.UUID | None = None) -> None:
-#     db.query(KoganExportJobSku).filter(KoganExportJobSku.sku == sku).delete()
-#     if job_id is not None:
-#         db.query(KoganExportJob).filter(KoganExportJob.id == job_id).delete()
-#     db.query(KoganTemplate).filter(
-#         KoganTemplate.sku == sku,
-#         KoganTemplate.country_type == "AU",
-#     ).delete()
-#     db.query(SkuFreightFee).filter(SkuFreightFee.sku_code == sku).delete()
-#     db.query(SkuInfo).filter(SkuInfo.sku_code == sku).delete()
-#     db.commit()
+def _cleanup(db, sku: str, job_id: str | None = None) -> None:
+    db.query(KoganExportJobSku).filter(KoganExportJobSku.sku == sku).delete()
+    if job_id is not None:
+        db.query(KoganExportJob).filter(KoganExportJob.id == job_id).delete()
+    db.query(KoganTemplate).filter(
+        KoganTemplate.sku == sku,
+        KoganTemplate.country_type == "AU",
+    ).delete()
+    db.query(SkuFreightFee).filter(SkuFreightFee.sku_code == sku).delete()
+    db.query(SkuInfo).filter(SkuInfo.sku_code == sku).delete()
+    db.commit()
 
 
 def _prepare_seed_data(sku: str) -> None:
@@ -77,6 +77,7 @@ def _prepare_seed_data(sku: str) -> None:
             kogan_au_price=Decimal("39.90"),
             kogan_k1_price=Decimal("35.90"),
             kogan_nz_price=Decimal("42.50"),
+            shipping_type="extra3",
         )
 
         baseline = KoganTemplate(
@@ -99,22 +100,21 @@ def test_kogan_template_export_download_apply_flow():
     if not _db_ready():
         pytest.skip("Database connection is not available for Kogan template integration test")
 
-    # test_sku = f"DEBUG-KOGAN-{uuid.uuid4().hex[:6]}"
-    # _prepare_seed_data(test_sku)
+    test_sku = f"DEBUG-KOGAN-{uuid.uuid4().hex[:6]}"
+    _prepare_seed_data(test_sku)
 
-    # job_id: uuid.UUID | None = None
-    job_id = "fa341937-dd59-4508-875a-e0c7e15f5833"
+    job_id: str | None = None
 
     try:
         # --- 1. 创建导出任务 ---
-        # with SessionLocal() as db:
-        #     payload = create_kogan_template_export(
-        #         country_type="AU",
-        #         db=db,
-        #         current_user=FAKE_USER,
-        #     )
-        # job_id = uuid.UUID(payload["job_id"])
-        # assert payload["row_count"] == 20
+        with SessionLocal() as db:
+            payload = create_kogan_template_export(
+                country_type="AU",
+                db=db,
+                current_user=FAKE_USER,
+            )
+        job_id = payload["job_id"]
+        assert payload["row_count"] == 1
 
         # --- 2. 下载 CSV ---
         with SessionLocal() as db:
@@ -146,25 +146,24 @@ def test_kogan_template_export_download_apply_flow():
         assert apply_result["status"] == "applied"
 
         # --- 5. 校验数据库回写情况 ---
-        # with SessionLocal() as db:
-        #     template = (
-        #         db.query(KoganTemplate)
-        #         .filter(
-        #             KoganTemplate.sku == test_sku,
-        #             KoganTemplate.country_type == "AU",
-        #         )
-        #         .one()
-        #     )
-        #     assert template.price == Decimal("39.90")
-        #     assert template.kogan_first_price == Decimal("35.90")
-        #     assert template.shipping == "variable"
-        #     assert template.handling_days is None
-        #     assert template.stock == 3
+        with SessionLocal() as db:
+            template = (
+                db.query(KoganTemplate)
+                .filter(
+                    KoganTemplate.sku == test_sku,
+                    KoganTemplate.country_type == "AU",
+                )
+                .one()
+            )
+            assert template.price == Decimal("39.90")
+            assert template.kogan_first_price == Decimal("35.90")
+            assert template.shipping == "variable"
+            assert template.handling_days is None
+            assert template.stock == 3
 
-        #     freight_row = db.get(SkuFreightFee, test_sku)
-        #     assert freight_row is not None and freight_row.kogan_dirty is False
+            freight_row = db.get(SkuFreightFee, test_sku)
+            assert freight_row is not None and freight_row.kogan_dirty is False
 
     finally:
-        print("Integration test finished.")
-        # with SessionLocal() as db:
-        #     _cleanup(db, test_sku, job_id)
+        with SessionLocal() as db:
+            _cleanup(db, test_sku, job_id)

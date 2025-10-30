@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import uuid
 from datetime import datetime
 from typing import Optional
 
@@ -14,7 +13,7 @@ from sqlalchemy import (
     Text,
     func,
 )
-from sqlalchemy.dialects.postgresql import UUID, JSONB
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -32,7 +31,7 @@ class ExportJobStatus(str):
 class KoganExportJob(Base):
     __tablename__ = "kogan_export_jobs"
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
     country_type: Mapped[str] = mapped_column(CountryType, nullable=False)
     status: Mapped[str] = mapped_column(
         SAEnum(
@@ -82,8 +81,8 @@ class KoganExportJobSku(Base):
     __tablename__ = "kogan_export_job_skus"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    job_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
+    job_id: Mapped[str] = mapped_column(
+        String(64),
         ForeignKey("kogan_export_jobs.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
