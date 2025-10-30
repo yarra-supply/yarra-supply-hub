@@ -41,8 +41,7 @@ def get_db():
 def _format_melbourne(dt: datetime | None) -> str:
     if not dt:
         return ""
-    # mel_zone = ZoneInfo("Australia/Melbourne")
-    return dt.astimezone(datetime).strftime("%Y-%m-%d %H:%M:%S")
+    return dt.strftime("%Y-%m-%d %H:%M:%S")
 
 
 
