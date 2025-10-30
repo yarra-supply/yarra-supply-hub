@@ -70,7 +70,8 @@ def _prepare_seed_data(sku: str) -> None:
 
         freight = SkuFreightFee(
             sku_code=sku,
-            kogan_dirty=True,
+            kogan_dirty_au=True,
+            kogan_dirty_nz=True,
             shipping_ave=Decimal("8.50"),
             weight=Decimal("1.250"),
             cubic_weight=Decimal("1.500"),
@@ -114,6 +115,7 @@ def test_kogan_template_export_download_apply_flow():
                 current_user=FAKE_USER,
             )
         job_id = payload["job_id"]
+        assert job_id.startswith("AU_"), job_id
         assert payload["row_count"] == 1
 
         # --- 2. 下载 CSV ---
@@ -125,6 +127,7 @@ def test_kogan_template_export_download_apply_flow():
             )
         assert resp.status_code == 200
         assert resp.headers.get("X-Kogan-Export-Job") == job_id
+        assert resp.headers.get("X-Kogan-Export-Status") == "exported"
         assert resp.content.startswith(b"SKU"), "CSV should contain header row"
 
         # --- 3. 重新下载接口也可使用 ---
@@ -145,6 +148,14 @@ def test_kogan_template_export_download_apply_flow():
             )
         assert apply_result["status"] == "applied"
 
+        with SessionLocal() as db:
+            resp_after: Response = download_export_job(
+                job_id=job_id,
+                db=db,
+                current_user=FAKE_USER,
+            )
+        assert resp_after.headers.get("X-Kogan-Export-Status") == "applied"
+
         # --- 5. 校验数据库回写情况 ---
         with SessionLocal() as db:
             template = (
@@ -162,7 +173,9 @@ def test_kogan_template_export_download_apply_flow():
             assert template.stock == 3
 
             freight_row = db.get(SkuFreightFee, test_sku)
-            assert freight_row is not None and freight_row.kogan_dirty is False
+            assert freight_row is not None
+            assert freight_row.kogan_dirty_au is False
+            assert freight_row.kogan_dirty_nz is True
 
     finally:
         with SessionLocal() as db:

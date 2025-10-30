@@ -4,6 +4,7 @@ import type {
   CountryType,
   KoganExportApplyResult,
   KoganExportJobSummary,
+  KoganExportNoDirtyResponse,
 } from "@/types/koganTemplateDownload";
 
 
@@ -17,8 +18,8 @@ const APPLY_EXPORT_URL = "/kogan-template/export";
  */
 export async function createKoganTemplateExport(
   country: CountryType,
-): Promise<KoganExportJobSummary> {
-  const res = await http.post<KoganExportJobSummary>(CREATE_EXPORT_URL, null, {
+): Promise<KoganExportJobSummary | KoganExportNoDirtyResponse> {
+  const res = await http.post<KoganExportJobSummary | KoganExportNoDirtyResponse>(CREATE_EXPORT_URL, null, {
     params: { country_type: country },
   });
   return res.data;
@@ -28,10 +29,53 @@ export async function createKoganTemplateExport(
 /**
  * 根据 jobId 下载已生成的 CSV 文件。
  */
+function parseJobSummaryFromHeaders(
+  headers: Record<string, unknown>,
+  fallback: Partial<KoganExportJobSummary> = {},
+): KoganExportJobSummary {
+  const header = (key: string) => {
+    const lower = key.toLowerCase();
+    const record = headers as Record<string, string | undefined>;
+    const direct = record[lower] ?? record[key];
+    if (direct !== undefined) {
+      return direct;
+    }
+    const getter = (headers as any).get;
+    if (typeof getter === "function") {
+      return getter.call(headers, lower) ?? getter.call(headers, key);
+    }
+    return undefined;
+  };
+
+  const jobId = header("x-kogan-export-job") || fallback.job_id || "";
+  const rowCountRaw = header("x-kogan-export-rows");
+  const rowCount = rowCountRaw ? Number(rowCountRaw) : fallback.row_count ?? 0;
+  const countryRaw = header("x-kogan-export-country") || fallback.country_type;
+  const status = header("x-kogan-export-status") || fallback.status || "exported";
+  const appliedAtRaw = header("x-kogan-export-applied-at") || (fallback.applied_at as string | null | undefined);
+  const exportedAtRaw = header("x-kogan-export-exported-at") || (fallback.exported_at as string | null | undefined);
+  const appliedAt = appliedAtRaw ? appliedAtRaw : null;
+  const exportedAt = exportedAtRaw ? exportedAtRaw : null;
+
+  return {
+    job_id: jobId,
+    file_name: fallback.file_name || "",
+    row_count: rowCount,
+    country_type: ((countryRaw || fallback.country_type) as CountryType) || "AU",
+    status,
+    exported_at: exportedAt,
+    applied_at: appliedAt,
+    created_by: fallback.created_by ?? null,
+    applied_by: fallback.applied_by ?? null,
+  };
+}
+
+
 export async function downloadKoganTemplateCSVByJob(
   jobId: string,
   fallbackFileName?: string,
-): Promise<void> {
+  baseline?: Partial<KoganExportJobSummary>,
+): Promise<KoganExportJobSummary> {
   const res = await http.get<Blob>(DOWNLOAD_EXPORT_URL, {
     params: { job_id: jobId },
     responseType: "blob",
@@ -53,6 +97,13 @@ export async function downloadKoganTemplateCSVByJob(
   a.click();
   a.remove();
   URL.revokeObjectURL(href);
+
+  const summary = parseJobSummaryFromHeaders(res.headers, {
+    job_id: jobId,
+    file_name: filename,
+    ...baseline,
+  });
+  return summary;
 }
 
 
@@ -61,10 +112,13 @@ export async function downloadKoganTemplateCSVByJob(
  */
 export async function downloadKoganTemplateCSV(
   country: CountryType,
-): Promise<KoganExportJobSummary> {
+): Promise<KoganExportJobSummary | KoganExportNoDirtyResponse> {
   const job = await createKoganTemplateExport(country);
-  await downloadKoganTemplateCSVByJob(job.job_id, job.file_name);
-  return job;
+  if ("detail" in job && job.detail === "no_dirty_sku") {
+    return job;
+  }
+  const summary = await downloadKoganTemplateCSVByJob(job.job_id, job.file_name, job);
+  return summary;
 }
 
 

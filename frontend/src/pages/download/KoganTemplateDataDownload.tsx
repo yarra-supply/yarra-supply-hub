@@ -46,10 +46,23 @@ const KoganTemplateDataDownload: React.FC = () => {
   const handleDownload = async (country: CountryType) => {
     setLoading(country, "download", true);
     try {
-      const job = await downloadKoganTemplateCSV(country);
-      setJobs((prev) => ({ ...prev, [country]: job }));
+      const result = await downloadKoganTemplateCSV(country);
+      if ("detail" in result && result.detail === "no_dirty_sku") {
+        if (result.last_job) {
+          setJobs((prev) => ({ ...prev, [country]: result.last_job! }));
+          message.info(
+            `当前没有待导出的 ${country} 数据，上次任务状态：${result.last_job.status}.`,
+          );
+        } else {
+          setJobs((prev) => ({ ...prev, [country]: undefined }));
+          message.info(`当前没有待导出的 ${country} 数据。`);
+        }
+        return;
+      }
+
+      setJobs((prev) => ({ ...prev, [country]: result }));
       message.success(
-        `Kogan ${country} CSV 已生成并下载（行数：${job.row_count}）。`,
+        `Kogan ${country} CSV 已生成并下载（行数：${result.row_count}）。`,
       );
     } catch (err: any) {
       console.error(err);
@@ -67,7 +80,8 @@ const KoganTemplateDataDownload: React.FC = () => {
     }
     setLoading(country, "redownload", true);
     try {
-      await downloadKoganTemplateCSVByJob(job.job_id, job.file_name);
+      const summary = await downloadKoganTemplateCSVByJob(job.job_id, job.file_name);
+      setJobs((prev) => ({ ...prev, [country]: summary }));
       message.success(`已重新下载 Kogan ${country} CSV`);
     } catch (err: any) {
       console.error(err);
@@ -89,7 +103,18 @@ const KoganTemplateDataDownload: React.FC = () => {
       message.success(
         `已确认 ${country} 导出并回写成功${res.applied_at ? `（${res.applied_at}）` : ""}`,
       );
-      setJobs((prev) => ({ ...prev, [country]: undefined }));
+      setJobs((prev) => {
+        const current = prev[country];
+        if (!current) return prev;
+        return {
+          ...prev,
+          [country]: {
+            ...current,
+            status: res.status,
+            applied_at: res.applied_at,
+          },
+        };
+      });
     } catch (err: any) {
       console.error(err);
       message.error(err?.message || `确认 ${country} 导出失败`);
@@ -105,7 +130,8 @@ const KoganTemplateDataDownload: React.FC = () => {
     return (
       <div style={{ marginTop: 8 }}>
         <Text type="secondary">
-          最近一次导出：job_id {job.job_id}（行数: {job.row_count}）
+          Latest export: job_id {job.job_id}（Rows: {job.row_count}, Status: {job.status}
+          {job.applied_at ? `，Applied at: ${job.applied_at}` : ""}）
         </Text>
         <Space style={{ marginTop: 8 }}>
           <Button
@@ -113,7 +139,7 @@ const KoganTemplateDataDownload: React.FC = () => {
             onClick={() => handleRedownload(country)}
             loading={loadingMap[country].redownload}
           >
-            重新下载
+            Redownload
           </Button>
           <Button
             size="small"
@@ -121,7 +147,7 @@ const KoganTemplateDataDownload: React.FC = () => {
             onClick={() => handleApply(country)}
             loading={loadingMap[country].apply}
           >
-            标记导出完成
+            Mark export as completed
           </Button>
         </Space>
       </div>

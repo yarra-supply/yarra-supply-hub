@@ -128,7 +128,8 @@ def process_batch_compute_and_persist(
             row["last_changed_run_id"] = freight_run_id
             row["last_changed_source"] = trigger
             row["last_changed_at"] = datetime.now(timezone.utc)
-            row["kogan_dirty"] = True
+            row["kogan_dirty_au"] = True
+            row["kogan_dirty_nz"] = True
             to_upsert.append(row)
 
     # 4) 落库 upsert

@@ -50,19 +50,23 @@ class SkuFreightFee(Base):
     last_changed_source: Mapped[str | None] = mapped_column(String(32))         # 'full_sync' | 'price_reset'
     last_changed_at: Mapped[Optional[object]] = mapped_column(DateTime(timezone=True), nullable=True)
 
-    # 给导出流程筛选“待导出”的轻量开关，默认 false, 按 kogan_dirty = true 只挑“有变化、未被导出确认”的 SKU
-    kogan_dirty: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))  
+    # 给导出流程筛选“待导出”的轻量开关
+    kogan_dirty_au: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
+    kogan_dirty_nz: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
 
     created_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
     __table_args__ = (
-        Index("ix_kogan_dirty_source", "kogan_dirty", "last_changed_source"),
-        # 部分索引，仅命中需要导出的行，导出场景查询更快
-        Index(  
-            "ix_kogan_dirty_true_only",
+        Index(
+            "ix_kogan_dirty_au_true_only",
             "sku_code",
-            postgresql_where=text("kogan_dirty = true")
+            postgresql_where=text("kogan_dirty_au = true")
+        ),
+        Index(
+            "ix_kogan_dirty_nz_true_only",
+            "sku_code",
+            postgresql_where=text("kogan_dirty_nz = true")
         ),
         Index("ix_kogan_sku_freight_fee_shipping_type", "shipping_type"),
     )

@@ -278,7 +278,8 @@ def load_fee_rows_by_skus(db: Session, skus: List[str]) -> Dict[str, dict]:
     if not skus:
         return {}
     sql = text("""
-        SELECT sku_code, selling_price, kogan_au_price, kogan_k1_price, kogan_nz_price, kogan_dirty
+        SELECT sku_code, selling_price, kogan_au_price, kogan_k1_price, kogan_nz_price,
+               kogan_dirty_au, kogan_dirty_nz
         FROM kogan_sku_freight_fee
         WHERE sku_code = ANY(:skus)
     """)
@@ -311,7 +312,8 @@ def update_changed_prices(
 
         # 统一增加脏标记与时间
         sets.extend([
-            "kogan_dirty = TRUE",
+            "kogan_dirty_au = TRUE",
+            "kogan_dirty_nz = TRUE",
             "last_changed_at = NOW()",
             "last_changed_source = :src",
             "last_changed_run_id = :rid",

@@ -1,6 +1,10 @@
 
 from __future__ import annotations
 
+import logging
+from datetime import datetime
+from zoneinfo import ZoneInfo
+from urllib.parse import quote
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 
 from sqlalchemy.orm import Session
@@ -11,8 +15,12 @@ from app.services.kogan_template_service import (
     apply_export_job,
     create_kogan_export_job,
     get_export_job_file,
+    serialize_export_job,
 )
 from app.services.auth_service import get_current_user
+
+
+logger = logging.getLogger(__name__)
 
 
 router = APIRouter(
@@ -28,6 +36,13 @@ def get_db():
     finally:
         db.close()
 
+
+
+def _format_melbourne(dt: datetime | None) -> str:
+    if not dt:
+        return ""
+    # mel_zone = ZoneInfo("Australia/Melbourne")
+    return dt.astimezone(datetime).strftime("%Y-%m-%d %H:%M:%S")
 
 
 
@@ -46,14 +61,19 @@ def create_kogan_template_export(
             created_by=None,
         )
     except NoDirtySkuError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        return {
+            "detail": "no_dirty_sku",
+            "row_count": 0,
+            "last_job": serialize_export_job(exc.last_job),
+        }
+    except Exception as exc:
+        logger.exception("create_kogan_template_export failed for %s", country_type)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(exc),
+        ) from exc
 
-    return {
-        "job_id": str(job.id),
-        "file_name": job.file_name,
-        "row_count": job.row_count,
-        "country_type": job.country_type,
-    }
+    return serialize_export_job(job)
 
 
 
@@ -72,11 +92,15 @@ def download_kogan_template_diff_csv(
     file_bytes = bytes(job.file_content or b"")
 
     headers = {
-        "Content-Disposition": f'attachment; filename="{job.file_name}"',
+        "Content-Disposition": f'attachment; filename="{quote(job.file_name)}"',
         "Cache-Control": "no-store",
-        "Access-Control-Expose-Headers": "Content-Disposition, X-Kogan-Export-Job, X-Kogan-Export-Rows",
+        "Access-Control-Expose-Headers": "Content-Disposition, X-Kogan-Export-Job, X-Kogan-Export-Rows, X-Kogan-Export-Status, X-Kogan-Export-Applied-At, X-Kogan-Export-Exported-At, X-Kogan-Export-Country",
         "X-Kogan-Export-Job": str(job.id),
         "X-Kogan-Export-Rows": str(job.row_count),
+        "X-Kogan-Export-Status": job.status,
+        "X-Kogan-Export-Applied-At": _format_melbourne(job.applied_at),
+        "X-Kogan-Export-Exported-At": _format_melbourne(job.exported_at),
+        "X-Kogan-Export-Country": job.country_type,
         "Content-Length": str(len(file_bytes)),
     }
 
@@ -103,11 +127,15 @@ def download_export_job(
     file_bytes = bytes(job.file_content or b"")
 
     headers = {
-        "Content-Disposition": f'attachment; filename="{job.file_name}"',
+        "Content-Disposition": f'attachment; filename="{quote(job.file_name)}"',
         "Cache-Control": "no-store",
-        "Access-Control-Expose-Headers": "Content-Disposition, X-Kogan-Export-Job, X-Kogan-Export-Rows",
+        "Access-Control-Expose-Headers": "Content-Disposition, X-Kogan-Export-Job, X-Kogan-Export-Rows, X-Kogan-Export-Status, X-Kogan-Export-Applied-At, X-Kogan-Export-Exported-At, X-Kogan-Export-Country",
         "X-Kogan-Export-Job": str(job.id),
         "X-Kogan-Export-Rows": str(job.row_count),
+        "X-Kogan-Export-Status": job.status,
+        "X-Kogan-Export-Applied-At": _format_melbourne(job.applied_at),
+        "X-Kogan-Export-Exported-At": _format_melbourne(job.exported_at),
+        "X-Kogan-Export-Country": job.country_type,
         "Content-Length": str(len(file_bytes)),
     }
     
@@ -115,9 +143,9 @@ def download_export_job(
 
 
 
-'''
+''' 
 当前端确认“导出成功”时调用，把那次 job 对应的变更回写到 kogan_template 表，
-并把相关 SKU 的 kogan_dirty 置回 false，避免重复导出
+并把相关 SKU 的国家级脏标记置回 false，避免重复导出
 '''
 @router.post("/kogan-template/export/{job_id}/apply")
 def apply_kogan_export(
@@ -130,7 +158,7 @@ def apply_kogan_export(
             db=db,
             job_id=job_id,
             # applied_by=(current_user or {}).get("id"),
-            created_by=None,
+            applied_by=None,
         )
     except ExportJobNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc

@@ -20,19 +20,25 @@ from app.db.model.kogan_export_job import (
 """
 分页迭代待导出的 运费结果表中本次更新/新增的运费结果：
     以批次形式迭代返回“需要导出的 SKU 列表”。
-    - 当 only_dirty=True：WHERE kogan_dirty=true
+    - 当 only_dirty=True：按 country_type 查对应的 kogan_dirty_* = true
     - 当提供 freight_run_id：WHERE last_changed_run_id=...
     - 两者都提供时，取交集条件（更严格）
     """
 def iter_changed_skus(
     db: Session,
+    *,
+    country_type: str,
     batch_size: int = 5000,
 ) -> Iterator[List[str]]:
-    
-    # 分页迭代待导出的 SKU（固定：WHERE kogan_dirty=true）
+    col = (
+        SkuFreightFee.kogan_dirty_au
+        if country_type == "AU"
+        else SkuFreightFee.kogan_dirty_nz
+    )
+
     q = (
         db.query(SkuFreightFee.sku_code)
-        .filter(SkuFreightFee.kogan_dirty.is_(True))
+        .filter(col.is_(True))
         .order_by(SkuFreightFee.sku_code.asc())
     )
 
@@ -132,6 +138,18 @@ def get_export_job(db: Session, job_id: str) -> Optional[KoganExportJob]:
 
 
 
+# 获取最近一次的导出任务记录（不含文件内容）
+def fetch_latest_export_job(db: Session, country_type: str) -> Optional[KoganExportJob]:
+    return (
+        db.query(KoganExportJob)
+        .options(selectinload(KoganExportJob.skus))
+        .filter(KoganExportJob.country_type == country_type)
+        .order_by(KoganExportJob.exported_at.desc())
+        .first()
+    )
+
+
+
 # 获取导出任务及其文件内容；找不到则抛错
 def mark_job_status(
     db: Session,
@@ -156,7 +174,7 @@ def mark_job_status(
 
 
 
-# 把前端确认“导出成功”时的变更回写到 kogan_template 表，并把相关 SKU 的 kogan_dirty 置回 false
+# 把前端确认“导出成功”时的变更回写到 kogan_template 表，并把相关 SKU 的国家脏标记置回 false
 def apply_kogan_template_updates(
     db: Session,
     *,
@@ -181,11 +199,16 @@ def apply_kogan_template_updates(
             setattr(row, col, val)
 
 
-def clear_kogan_dirty_flags(db: Session, skus: Sequence[str]) -> None:
+def clear_kogan_dirty_flags(db: Session, skus: Sequence[str], *, country_type: str) -> None:
     if not skus:
         return
+
+    column = (
+        SkuFreightFee.kogan_dirty_au if country_type == "AU" else SkuFreightFee.kogan_dirty_nz
+    )
+
     (
         db.query(SkuFreightFee)
         .filter(SkuFreightFee.sku_code.in_(skus))
-        .update({SkuFreightFee.kogan_dirty: False}, synchronize_session=False)
+        .update({column: False}, synchronize_session=False)
     )

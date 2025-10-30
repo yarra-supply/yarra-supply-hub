@@ -17,6 +17,7 @@ from app.repository.kogan_template_repo import (
     apply_kogan_template_updates,
     clear_kogan_dirty_flags,
     create_export_job as repo_create_export_job,
+    fetch_latest_export_job,
     get_export_job,
     iter_changed_skus,
     load_kogan_baseline_map,
@@ -86,6 +87,10 @@ def _get_column_specs(country_type: str) -> List[ColumnSpec]:
 class NoDirtySkuError(RuntimeError):
     """没有待导出的 SKU。"""
 
+    def __init__(self, message: str, last_job: Optional["KoganExportJob"] = None):
+        super().__init__(message)
+        self.last_job = last_job
+
 
 class ExportJobNotFoundError(RuntimeError):
     """指定的导出任务不存在。"""
@@ -123,7 +128,8 @@ def create_kogan_export_job(
     # 1 - 构建导出数据集
     build = _build_export_dataset(db, country_type, column_specs)
     if build.row_count == 0:
-        raise NoDirtySkuError("没有可导出的 kogan 数据")
+        last_job = fetch_latest_export_job(db, country_type)
+        raise NoDirtySkuError("没有可导出的 kogan 数据", last_job=last_job)
     
     # 2 - 写入导出任务记录
     job = repo_create_export_job(
@@ -151,7 +157,6 @@ def create_kogan_export_job(
 # 获取导出任务及其文件内容；找不到则抛错
 def get_export_job_file(db: Session, job_id: str) -> KoganExportJob:
     job = get_export_job(db, job_id)
-    
     if job is None:
         raise ExportJobNotFoundError(f"未找到导出任务: {job_id}")
     return job
@@ -185,7 +190,7 @@ def apply_export_job(
         country_type=job.country_type,
         updates=updates,
     )
-    clear_kogan_dirty_flags(db, [row.sku for row in job.skus])
+    clear_kogan_dirty_flags(db, [row.sku for row in job.skus], country_type=job.country_type)
     db.flush()
     mark_job_status(
         db,
@@ -213,7 +218,7 @@ def _build_export_dataset(
     row_count = 0
 
     batch_size = _resolve_batch_size()
-    for skus in iter_changed_skus(db=db, batch_size=batch_size):
+    for skus in iter_changed_skus(db=db, country_type=country_type, batch_size=batch_size):
         if not skus:
             continue
 
@@ -325,6 +330,22 @@ def _jsonify_value(value: object) -> object:
     if isinstance(value, Decimal):
         return str(value)
     return value
+
+
+def serialize_export_job(job: Optional[KoganExportJob]) -> Optional[Dict[str, object]]:
+    if job is None:
+        return None
+    return {
+        "job_id": job.id,
+        "file_name": job.file_name,
+        "row_count": job.row_count,
+        "country_type": job.country_type,
+        "status": job.status,
+        "exported_at": job.exported_at.isoformat() if job.exported_at else None,
+        "applied_at": job.applied_at.isoformat() if job.applied_at else None,
+        "created_by": job.created_by,
+        "applied_by": job.applied_by,
+    }
 
 
 
