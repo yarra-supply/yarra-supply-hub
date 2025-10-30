@@ -2,9 +2,10 @@
 from fastapi import Depends, HTTPException, status, Request, Response
 from sqlalchemy.orm import Session
 from app.db.session import get_db
-from app.core.security import verify_password, create_access_token, decode_token, get_password_hash
+from app.core.security import verify_password, create_access_token, decode_token
 from app.core.config import settings
 from app.db.model.user import User
+from app.repository.user_repo import get_by_username
 
 
 COOKIE_NAME = settings.COOKIE_NAME
@@ -51,10 +52,8 @@ def clear_cookie(response):
     2) 生成可读的 csrf_token Cookie（非 HttpOnly），用于双提交校验
     3) 有效期：默认 8 小时（可通过 settings.ACCESS_TOKEN_EXPIRE_MINUTES 配置为 480/720）
 '''
-def login_user(response: Response, username: str, password: str):
-    print("[DEBUG] login_user got:", repr(username), repr(password))
-    
-    user = authenticate_user(username, password)
+def login_user(response: Response, db: Session, username: str, password: str) -> User:
+    user = authenticate_user(db, username, password)
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
     
@@ -64,7 +63,7 @@ def login_user(response: Response, username: str, password: str):
 
     # 2) 签发 JWT（把有效期显式传入，确保与 Cookie 的 max_age 对齐）
     token = create_access_token(
-        {"user_id": user["id"], "username": user["username"]}, 
+        {"user_id": user.id, "username": user.username}, 
         expires_minutes=expires_minutes
     )
 
@@ -72,34 +71,16 @@ def login_user(response: Response, username: str, password: str):
     set_auth_cookie(response, token, max_age)
 
     # 4) 返回前端用的用户概要
-    return {
-        "id": user["id"],
-        "username": user["username"],
-        "full_name": user["full_name"],
-        "is_superuser": user["is_superuser"],
-    }
+    return user
 
 
-
-
-
-def authenticate_user(username: str, password: str):
-#def authenticate_user(db: Session, username: str, password: str) -> User | None:
-
-    # mock test
-    """简单用户名密码校验（替代数据库逻辑）"""
-    if username != FAKE_USER["username"]:
+def authenticate_user(db: Session, username: str, password: str) -> User | None:
+    user = get_by_username(db, username)
+    if not user or not user.is_active:
         return None
-    if not verify_password(password, FAKE_USER["password_hash"]):
+    if not verify_password(password, user.hashed_password):
         return None
-    return FAKE_USER
-
-    # user = get_by_username(db, username)
-    # if not user or not user.is_active:
-    #     return None
-    # if not verify_password(password, user.hashed_password):
-    #     return None
-    # return user
+    return user
 
 
 '''
@@ -108,7 +89,6 @@ def authenticate_user(username: str, password: str):
     - 读出 user_id，没有去 Redis/DB 用 sessionId 回表找用户会话
 '''
 def get_current_user(request: Request, db: Session = Depends(get_db)) -> User:
-    
     """从 Cookie 取出 JWT 并校验"""
     raw = request.cookies.get(COOKIE_NAME)
     if not raw:
@@ -117,23 +97,7 @@ def get_current_user(request: Request, db: Session = Depends(get_db)) -> User:
     if not payload or "user_id" not in payload:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
     
-    # Mock test 简单返回伪用户
-    return FAKE_USER
-
-    # user = db.get(User, payload["user_id"])
-    # if not user or not user.is_active:
-    #     raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User disabled")
-    # return user
-
-
-
-
-# 固定用户名密码（明文存储，仅测试用）后续delete
-FAKE_USER = {
-    "id": 1,
-    "username": "yarrasupply",
-    "password_hash": get_password_hash("yarrasupply2025"),  # 访问时输入 
-    "full_name": "Test Admin",
-    "is_active": True,
-    "is_superuser": True,
-}
+    user = db.get(User, payload["user_id"])
+    if not user or not user.is_active:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User disabled")
+    return user
