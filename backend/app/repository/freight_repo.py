@@ -428,7 +428,7 @@ def load_freight_map(db: Session, skus: List[str]) -> Dict[str, Dict[str, object
             "kogan_au_price": getattr(r, "kogan_au_price", None),
             "kogan_k1_price": getattr(r, "kogan_k1_price", None),
             "kogan_nz_price": getattr(r, "kogan_nz_price", None),
-            "shipping_ave": getattr(r, "shipping_ave", None),
+            "shipping_type": getattr(r, "shipping_type", None),
             "weight": getattr(r, "weight", None),
             # "cubic_weight": getattr(r, "cubic_weight", None),
         }

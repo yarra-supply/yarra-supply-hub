@@ -778,11 +778,19 @@ def load_products_map(db: Session, skus: List[str]) -> Dict[str, Dict[str, objec
     out: Dict[str, Dict[str, object]] = {}
     for r in rows:
         out[r.sku_code] = {
-            # "sku": getattr(r, "sku_code", None),
             "rrp": getattr(r, "rrp_price", None),
             "barcode": getattr(r, "ean_code", None),
             "stock": getattr(r, "stock_qty", None),
             "brand": getattr(r, "brand", None),
+
+            # "kogan_first_price": getattr(r, "kogan_first_price", None),
+            # "handling_days": getattr(r, "handling_days", None),
+            # "weight": getattr(r, "weight", None),
+            # "title": getattr(r, "title", None),
+            # "description": getattr(r, "description", None),
+            # "subtitle": getattr(r, "subtitle", None),
+            # "whats_in_the_box": getattr(r, "whats_in_the_box", None),
+            # "category": getattr(r, "category", None),
         }
     return out
 logger = logging.getLogger(__name__)

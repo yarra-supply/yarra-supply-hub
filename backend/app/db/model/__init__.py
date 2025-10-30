@@ -15,6 +15,7 @@ from .freight import (
 
 from .freight_cal_config import FreightCalcConfig
 from .kogan_au_template import KoganTemplate
+from .kogan_export_job import KoganExportJob, KoganExportJobSku
 from .schedule import Schedule
 from .user import User
 
@@ -24,6 +25,5 @@ __all__ = [
     # freight
     "SkuFreightFee", "FreightRun",
     # others
-    "FreightCalcConfig", "KoganTemplate", "Schedule", "User",
+    "FreightCalcConfig", "KoganTemplate", "KoganExportJob", "KoganExportJobSku", "Schedule", "User",
 ]
-

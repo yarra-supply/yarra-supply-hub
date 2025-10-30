@@ -1,7 +1,8 @@
 
 from __future__ import annotations
+import uuid
 from dataclasses import dataclass
-from typing import Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence
 from datetime import datetime, timezone
 from decimal import Decimal
 import csv
@@ -12,9 +13,15 @@ from sqlalchemy.orm import Session
 
 from app.repository.product_repo import load_products_map
 from app.repository.freight_repo import load_freight_map
+from app.db.model.kogan_export_job import ExportJobStatus, KoganExportJob
 from app.repository.kogan_template_repo import (
+    apply_kogan_template_updates,
+    clear_kogan_dirty_flags,
+    create_export_job as repo_create_export_job,
+    get_export_job,
     iter_changed_skus,
     load_kogan_baseline_map,
+    mark_job_status,
 )
 
 
@@ -22,6 +29,14 @@ from app.repository.kogan_template_repo import (
 DEFAULT_BATCH_SIZE = 5000
 MIN_BATCH_SIZE = 1000
 MAX_BATCH_SIZE = 10000
+
+def _resolve_batch_size() -> int:
+    size = DEFAULT_BATCH_SIZE
+    if size < MIN_BATCH_SIZE:
+        size = MIN_BATCH_SIZE
+    if size > MAX_BATCH_SIZE:
+        size = MAX_BATCH_SIZE
+    return size
 
 
 @dataclass(frozen=True)
@@ -69,116 +84,248 @@ def _get_column_specs(country_type: str) -> List[ColumnSpec]:
         raise ValueError(f"Unsupported country_type: {country_type}") from exc
 
 
+class NoDirtySkuError(RuntimeError):
+    """没有待导出的 SKU。"""
+
+
+class ExportJobNotFoundError(RuntimeError):
+    """指定的导出任务不存在。"""
+
+
+@dataclass(frozen=True)
+class ExportJobSkuRecord:
+    sku: str
+    template_payload: Dict[str, object]
+    changed_columns: List[str]
+
+
+@dataclass(frozen=True)
+class ExportJobBuild:
+    file_name: str
+    file_bytes: bytes
+    row_count: int
+    sku_records: List[ExportJobSkuRecord]
+    skus: List[str]
 
 
 
-"""
-获取kogan template数据方法
-    - 只按 kogan_dirty=true 取待导出的 SKU；
-    - 分批 + 流式返回（迭代器, 文件名）。
-"""
-def stream_kogan_diff_csv(
+
+
+"""创建导出任务：先生成完整 CSV，再写入数据库，最后返回 job + 文件字节"""
+def create_kogan_export_job(
     db: Session,
-    *, 
-    source: str | None = None,
+    *,
     country_type: str,
-) -> Tuple[Iterator[str], str]:
+    created_by: Optional[int],
+) -> KoganExportJob:
     
-    # 在内部决定 batch_size，并做钳制
-    batch_size = DEFAULT_BATCH_SIZE
-    if batch_size < MIN_BATCH_SIZE:
-        batch_size = MIN_BATCH_SIZE
-    if batch_size > MAX_BATCH_SIZE:
-        batch_size = MAX_BATCH_SIZE
-    
-    # 1) 查询运费计算结果表，获取需要导出的sku: 拿到需要导出的 SKU（固定按 kogan_dirty=true）
-    skus_iter = iter_changed_skus(
-        db=db,
-        batch_size=batch_size,
-    )
-
-    # 2) 准备列规格 & 文件名
     column_specs = _get_column_specs(country_type)
-    filename = f'kogan_diff_{country_type}_{datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")}.csv'
+
+    # 1 - 构建导出数据集
+    build = _build_export_dataset(db, country_type, column_specs)
+    if build.row_count == 0:
+        raise NoDirtySkuError("没有可导出的 kogan 数据")
     
-    # 3) 返回一个迭代器 (边生成边 yield）和一个带时间戳的文件名
-    csv_iter = _csv_iter(
-        db=db,
+    # 2 - 写入导出任务记录
+    job = repo_create_export_job(
+        db,
         country_type=country_type,
-        column_specs=column_specs,
-        skus_iter=skus_iter,
+        file_name=build.file_name,
+        file_bytes=build.file_bytes,
+        row_count=build.row_count,
+        created_by=created_by,
+        sku_records=[
+            {
+                "sku": record.sku,
+                "template_payload": record.template_payload,
+                "changed_columns": record.changed_columns,
+            }
+            for record in build.sku_records
+        ],
     )
-    return csv_iter, filename
+
+    return job
 
 
 
-"""
-方法: 具体的流式生成器
-    - 边查边比对边生成 CSV 行（字符串分块）。
-    - 只输出“发生变更”的行；且该行只有发生变更的列有值，其余列留空。
-"""
-def _csv_iter(
+
+# 获取导出任务及其文件内容；找不到则抛错
+def get_export_job_file(db: Session, job_id: uuid.UUID) -> KoganExportJob:
+    job = get_export_job(db, job_id)
+    
+    if job is None:
+        raise ExportJobNotFoundError(f"未找到导出任务: {job_id}")
+    return job
+
+
+
+def apply_export_job(
+    db: Session,
+    *,
+    job_id: uuid.UUID,
+    applied_by: Optional[int],
+) -> KoganExportJob:
+    job = get_export_job(db, job_id)
+    if job is None:
+        raise ExportJobNotFoundError(f"未找到导出任务: {job_id}")
+    if job.status != ExportJobStatus.EXPORTED:
+        raise RuntimeError(f"当前状态不允许回写: {job.status}")
+
+    updates = []
+    for sku_row in job.skus:
+        template_values = _decode_template_payload(sku_row.template_payload)
+        if not template_values:
+            continue
+        updates.append({
+            "sku": sku_row.sku,
+            "values": template_values,
+        })
+
+    apply_kogan_template_updates(
+        db,
+        country_type=job.country_type,
+        updates=updates,
+    )
+    clear_kogan_dirty_flags(db, [row.sku for row in job.skus])
+    db.flush()
+    mark_job_status(
+        db,
+        job,
+        status=ExportJobStatus.APPLIED,
+        applied_by=applied_by,
+    )
+    return job
+
+
+
+def _build_export_dataset(
     db: Session,
     country_type: str,
     column_specs: Sequence[ColumnSpec],
-    skus_iter: Iterable[List[str]],
-) -> Iterator[str]:
+) -> ExportJobBuild:
     
     headers = [col.header for col in column_specs]
-
-    # 1) 写入 header
     buf = io.StringIO()
     writer = csv.writer(buf)
     writer.writerow(headers)
-    yield buf.getvalue()
-    buf.seek(0); buf.truncate(0)
 
+    sku_records: List[ExportJobSkuRecord] = []
+    all_skus: List[str] = []
+    row_count = 0
 
-    # 2) 对每个 SKU 批次执行, AU 和 NZ 模版不一样, 根据type对应不同模版
-    for skus in skus_iter:
+    batch_size = _resolve_batch_size()
+    for skus in iter_changed_skus(db=db, batch_size=batch_size):
         if not skus:
             continue
 
-        # 3) 获取产品信息: sku, rrp, ean_code, stock_qty, brand, sku2? 
-        prod_map = load_products_map(db, skus) 
+        # 1 - query productdata
+        product_map = load_products_map(db, skus)
 
-        # 4) 获取运费结果信息: sku, kogan_au_price, kogan first price, shipping_type, weight(update后的)
-        fr_map = load_freight_map(db, skus)   
+        # 2 - query freight data
+        freight_map = load_freight_map(db, skus)
 
-        # 5) 获取历史kogan信息
-        base_map = load_kogan_baseline_map(db, country_type, skus) 
+        # 3 - load history kogan template data
+        baseline_map = load_kogan_baseline_map(db, country_type, skus)
 
         for sku in skus:
-            # 6) 把“产品 + 运费”映射成完整的 CSV 行:
-            #  sku, rrp, ean_code, stock_qty, brand, sku2? kogan_au_price, kogan first price, shipping_type, weight(update后的)
+
+            # 4 - build full csv row
             csv_full = _map_to_kogan_csv_row(
                 country_type=country_type,
                 sku=sku,
                 column_specs=column_specs,
-                product_row=prod_map.get(sku, {}),
-                freight_row=fr_map.get(sku, {}),
+                product_row=product_map.get(sku, {}),
+                freight_row=freight_map.get(sku, {}),
             )
 
-            # 7) 与基线做列级比较，得到只含变化的列
+            # 5 - diff against baseline
             sparse = _diff_against_baseline(
                 csv_row=csv_full,
-                baseline_row=base_map.get(sku),
+                baseline_row=baseline_map.get(sku),
                 columns=column_specs,
             )
 
             if not sparse:
-                continue  # 没变化则不输出该行
+                continue
 
-            # 8) todo 写法？只填变化的列，其他列写空
-            row_values = [sparse.get(col.logical_key, "") for col in column_specs]
-            writer.writerow(row_values)
+            # 6 - write csv row
+            row = [sparse.get(col.logical_key, "") for col in column_specs]
+            writer.writerow(row)
+            row_count += 1
+            all_skus.append(sku)
 
-            # 9) todo 本次 kogan_template 变化的字段需要更新到DB 
+            template_payload, changed_columns = _build_template_payload(
+                column_specs,
+                csv_full,
+                sparse,
+            )
+
+            # 7 - record sku change
+            sku_records.append(
+                ExportJobSkuRecord(
+                    sku=sku,
+                    template_payload=template_payload,
+                    changed_columns=changed_columns,
+                )
+            )
+
+    csv_bytes = buf.getvalue().encode("utf-8")
+    filename = f'kogan_diff_{country_type}_{datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")}.csv'
+
+    return ExportJobBuild(
+        file_name=filename,
+        file_bytes=csv_bytes,
+        row_count=row_count,
+        sku_records=sku_records,
+        skus=all_skus,
+    )
 
 
-        # flush chunk
-        yield buf.getvalue()
-        buf.seek(0); buf.truncate(0)
+
+# 构建“仅变化列”的模板负载 + 变化列列表
+def _build_template_payload(
+    column_specs: Sequence[ColumnSpec],
+    csv_full: Dict[str, object],
+    sparse: Dict[str, object],
+) -> tuple[Dict[str, object], List[str]]:
+    
+    payload: Dict[str, object] = {}
+    changed: List[str] = []
+    for col in column_specs:
+        if col.always_include or not col.model_col:
+            continue
+        if col.logical_key not in sparse:
+            continue
+        value = csv_full.get(col.logical_key)
+        payload[col.model_col] = _jsonify_value(value)
+        changed.append(col.model_col)
+    return payload, changed
+
+
+
+DECIMAL_MODEL_COLUMNS = {"price", "rrp", "kogan_first_price", "weight"}
+INT_MODEL_COLUMNS = {"stock", "handling_days"}
+
+
+def _decode_template_payload(payload: Dict[str, object]) -> Dict[str, object]:
+    decoded: Dict[str, object] = {}
+    for key, raw in payload.items():
+        if raw is None:
+            decoded[key] = None
+            continue
+        if key in DECIMAL_MODEL_COLUMNS:
+            decoded[key] = Decimal(str(raw))
+        elif key in INT_MODEL_COLUMNS:
+            decoded[key] = int(raw)
+        else:
+            decoded[key] = str(raw)
+    return decoded
+
+
+def _jsonify_value(value: object) -> object:
+    if isinstance(value, Decimal):
+        return str(value)
+    return value
 
 
 
@@ -252,7 +399,7 @@ def _map_to_kogan_csv_row(
     price_val = g(freight_row, price_key) or g(product_row, "price")
 
     #2 shipping 
-    shipping_raw = g(freight_row, "shipping_ave")
+    shipping_raw = g(freight_row, "shipping_type")
     if country_type == "AU":
         if shipping_raw is None:
             shipping_val = None
