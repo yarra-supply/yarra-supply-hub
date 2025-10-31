@@ -150,14 +150,13 @@ def export_products_csv(
     tag: Optional[str] = None,
     db: Session = Depends(get_db),
 ):
-    # 现在先用 Mock；切 DB 时把 use_mock=False 即可
-    USE_MOCK = True
-    from .product import MOCK_PRODUCTS  # 与当前文件里的 MOCK_PRODUCTS 保持一致【:contentReference[oaicite:6]{index=6}】
+    # 直接从数据库导出商品信息
+    USE_MOCK = False
 
     gen = export_products_csv_iter(
         db=db,
         use_mock=USE_MOCK,
-        mock_rows=MOCK_PRODUCTS if USE_MOCK else None,
+        mock_rows=None,
         sku_prefix=sku,
         tags_csv=tag,
         prefer_sql=True,

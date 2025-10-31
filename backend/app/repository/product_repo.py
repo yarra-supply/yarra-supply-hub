@@ -49,9 +49,10 @@ SYNC_FIELDS = [
 
 # 前端表格用到的主要字段（与 /products 返回一致
 _PRODUCT_EXPORT_COLUMNS = [
-    "sku_code", "brand", "stock_qty", 
+    "sku_code", "brand", "stock_qty", "product_tags",
     "price", "rrp_price", "special_price", "special_price_end_date", "shopify_price",
-    "weight", "length", "width", "height", "cbm", "product_tags",
+    "weight", "length", "width", "height", "cbm", 
+    
     "freight_act", "freight_nsw_m", "freight_nsw_r", "freight_nt_m", "freight_nt_r",
     "freight_qld_m", "freight_qld_r", "remote", "freight_sa_m", "freight_sa_r",
     "freight_tas_m", "freight_tas_r", "freight_vic_m", "freight_vic_r", "freight_wa_m",
@@ -615,9 +616,9 @@ def export_products_csv_iter_mock(
 
     for r in data:
         row = {k: r.get(k) for k in _PRODUCT_CSV_HEADERS}
-        # tags 序列化成人类可读 JSON
-        if isinstance(row.get("tags"), (list, dict)):
-            row["tags"] = json.dumps(row["tags"], ensure_ascii=False)
+        # product_tags 序列化成人类可读 JSON
+        if isinstance(row.get("product_tags"), (list, dict)):
+            row["product_tags"] = json.dumps(row["product_tags"], ensure_ascii=False)
         w.writerow([row.get(k) for k in _PRODUCT_CSV_HEADERS])
 
         if buf.tell() >= flush_bytes:
@@ -676,12 +677,9 @@ def export_products_csv_iter_sql(
 
     where_sql = " AND ".join(conds)
 
-    # status 从 stock_qty 推导（>0 则 active，否则 discontinued）
+    columns_sql = ",\n             ".join(_PRODUCT_EXPORT_COLUMNS)
     sql = f"""
-      SELECT sku_code, brand, stock_qty,
-             CASE WHEN COALESCE(stock_qty,0) > 0 THEN 'active' ELSE 'discontinued' END AS status,
-             price, special_price, special_price_end_date,
-             updated_at, product_tags AS tags
+      SELECT {columns_sql}
         FROM sku_info
        WHERE {where_sql}
     ORDER BY sku_code
@@ -698,8 +696,8 @@ def export_products_csv_iter_sql(
     keys = rs.keys()
     for rec in rs:
         d = dict(zip(keys, rec))
-        if isinstance(d.get("tags"), (list, dict)):
-            d["tags"] = json.dumps(d["tags"], ensure_ascii=False)
+        if isinstance(d.get("product_tags"), (list, dict)):
+            d["product_tags"] = json.dumps(d["product_tags"], ensure_ascii=False)
         # special_price_end_date/updated_at 让数据库按默认文本输出（或自行格式化）
         w.writerow([d.get(k) for k in _PRODUCT_CSV_HEADERS])
 
