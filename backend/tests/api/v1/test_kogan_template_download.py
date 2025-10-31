@@ -20,7 +20,7 @@ from app.api.v1.kogan_template_download import (
     apply_kogan_export,
 )
 from app.db.model.freight import SkuFreightFee
-from app.db.model.kogan_au_template import KoganTemplate
+from app.db.model.kogan_au_template import KoganTemplateAU, KoganTemplateNZ
 from app.db.model.kogan_export_job import KoganExportJob, KoganExportJobSku
 from app.db.model.product import SkuInfo
 from app.db.session import SessionLocal
@@ -43,9 +43,11 @@ def _cleanup(db, sku: str, job_id: str | None = None) -> None:
     db.query(KoganExportJobSku).filter(KoganExportJobSku.sku == sku).delete()
     if job_id is not None:
         db.query(KoganExportJob).filter(KoganExportJob.id == job_id).delete()
-    db.query(KoganTemplate).filter(
-        KoganTemplate.sku == sku,
-        KoganTemplate.country_type == "AU",
+    db.query(KoganTemplateAU).filter(
+        KoganTemplateAU.sku == sku,
+    ).delete()
+    db.query(KoganTemplateNZ).filter(
+        KoganTemplateNZ.sku == sku,
     ).delete()
     db.query(SkuFreightFee).filter(SkuFreightFee.sku_code == sku).delete()
     db.query(SkuInfo).filter(SkuInfo.sku_code == sku).delete()
@@ -81,7 +83,7 @@ def _prepare_seed_data(sku: str) -> None:
             shipping_type="extra3",
         )
 
-        baseline = KoganTemplate(
+        baseline = KoganTemplateAU(
             sku=sku,
             country_type="AU",
             price=Decimal("34.90"),
@@ -159,10 +161,9 @@ def test_kogan_template_export_download_apply_flow():
         # --- 5. 校验数据库回写情况 ---
         with SessionLocal() as db:
             template = (
-                db.query(KoganTemplate)
+                db.query(KoganTemplateAU)
                 .filter(
-                    KoganTemplate.sku == test_sku,
-                    KoganTemplate.country_type == "AU",
+                    KoganTemplateAU.sku == test_sku,
                 )
                 .one()
             )

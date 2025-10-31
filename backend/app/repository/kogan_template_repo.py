@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from app.db.model.freight import SkuFreightFee
-from app.db.model.kogan_au_template import KoganTemplate
+from app.db.model.kogan_au_template import KoganTemplateAU, KoganTemplateNZ
 from app.db.model.kogan_export_job import (
     ExportJobStatus,
     KoganExportJob,
@@ -55,17 +55,22 @@ def iter_changed_skus(
 
 
 
-# 读取 KoganTemplate 表的历史基线，返回 {sku: ORM对象}，供 service 做列级 diff 使用
-def load_kogan_baseline_map(db: Session, country_type: str, skus: List[str]) -> Dict[str, KoganTemplate]:
+KoganTemplateModel = KoganTemplateAU | KoganTemplateNZ
+
+
+# 读取 KoganTemplate_* 表的历史基线，返回 {sku: ORM对象}，供 service 做列级 diff 使用
+def load_kogan_baseline_map(db: Session, country_type: str, skus: List[str]) -> Dict[str, KoganTemplateModel]:
 
     if not skus:
         return {}
 
-    rows: List[KoganTemplate] = (
-        db.query(KoganTemplate)
+    model = KoganTemplateAU if country_type == "AU" else KoganTemplateNZ
+
+    rows: List[KoganTemplateModel] = (
+        db.query(model)
         .filter(
-            KoganTemplate.country_type == country_type,
-            KoganTemplate.sku.in_(skus),
+            model.country_type == country_type,
+            model.sku.in_(skus),
         )
         .all()
     )
@@ -174,7 +179,7 @@ def mark_job_status(
 
 
 
-# 把前端确认“导出成功”时的变更回写到 kogan_template 表，并把相关 SKU 的国家脏标记置回 false
+# 把前端确认“导出成功”时的变更回写到 kogan_template_AU/NZ 表，并把相关 SKU 的国家脏标记置回 false
 def apply_kogan_template_updates(
     db: Session,
     *,
@@ -186,13 +191,14 @@ def apply_kogan_template_updates(
 
     skus = [item["sku"] for item in updates]
     existing = load_kogan_baseline_map(db, country_type, skus)
+    model = KoganTemplateAU if country_type == "AU" else KoganTemplateNZ
 
     for rec in updates:
         sku = rec["sku"]
         values = rec["values"]
         row = existing.get(sku)
         if row is None:
-            row = KoganTemplate(sku=sku, country_type=country_type)
+            row = model(sku=sku, country_type=country_type)
             db.add(row)
             existing[sku] = row
         for col, val in values.items():

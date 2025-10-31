@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence
 from datetime import datetime, timezone
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
 import csv
 import io
 
@@ -390,11 +390,8 @@ def _diff_against_baseline(
 
 
 
-#============= 工具类 ===============
-_NUMERIC_TYPES = (int, float, Decimal)
 
 
-# ====== 业务映射：把产品/运费行 -> CSV 行（这里只是默认策略，可按实际完善） ======
 """
 给定一个 SKU, 把产品信息 + 运费结果 映射为一整行 Kogan CSV 字段。
     - Price: 优先使用运费结果表里的 Kogan 价格（AU/NZ），否则退回到 sku_info.price；
@@ -410,62 +407,110 @@ def _map_to_kogan_csv_row(
     freight_row: Dict[str, object],
 ) -> Dict[str, object]:
    
-    # 安全取值
-    def g(d: Dict[str, object], key: str):
-        return d.get(key) if d else None
-    
-    #1 price
-    price_key = "kogan_au_price" if country_type == "AU" else "kogan_nz_price"
-    price_val = g(freight_row, price_key) or g(product_row, "price")
-
-    #2 shipping
-    shipping_type = g(freight_row, "shipping_type")
-    shipping_type_normalized = shipping_type.lower() if isinstance(shipping_type, str) else ""
-    if shipping_type_normalized in {"extra3", "extra4", "extra5"}:
-        shipping_val = "variable"
-    else:
-        shipping_val = "0"
-
+    price_val = _resolve_price(country_type, product_row, freight_row)
+    shipping_val = _resolve_shipping(country_type, freight_row)
+    rrp_val, kogan_first_price_val = _resolve_rrp_and_first_price(
+        country_type,
+        price_val,
+        product_row,
+        freight_row,
+    )
 
     row = {
         "SKU": sku,
         "Price": price_val,
-        "RRP": g(product_row, "rrp"),
-        "Kogan First Price": g(freight_row, "kogan_k1_price"),
+        "RRP": rrp_val,
+        "Kogan First Price": kogan_first_price_val,
         "Handling Days": 3,
-        "Barcode": g(product_row, "barcode"),
-        "Stock": g(product_row, "stock"),
+        "Barcode": _get_value(product_row, "barcode"),
+        "Stock": _get_value(product_row, "stock"),
         "Shipping": shipping_val,
-        "Weight": g(freight_row, "weight"),
-        "Brand": g(product_row, "brand"),
-        # "Title": g(product_row, "title"),
-        # "Description": g(product_row, "description"),
-        # "Subtitle": g(product_row, "subtitle"),
-        # "What's in the Box": g(product_row, "whats_in_the_box"),
+        "Weight": _get_value(freight_row, "weight"),
+        "Brand": _get_value(product_row, "brand"),
+        # "Title": _get_value(product_row, "title"),
+        # "Description": _get_value(product_row, "description"),
+        # "Subtitle": _get_value(product_row, "subtitle"),
+        # "What's in the Box": _get_value(product_row, "whats_in_the_box"),
         # "SKU_2": sku if country_type == "AU" else None,
-        # "Category": g(product_row, "category"),
+        # "Category": _get_value(product_row, "category"),
     }
     return {spec.logical_key: row.get(spec.logical_key) for spec in column_specs}
 
 
 
 
-def _is_zero(value: object) -> bool:
+#============= 工具类 ===============
+_NUMERIC_TYPES = (int, float, Decimal)
+
+
+# ====== 业务映射：把产品/运费行 -> CSV 行（这里只是默认策略，可按实际完善） ======
+def _get_value(row: Optional[Dict[str, object]], key: str) -> Optional[object]:
+    if not row:
+        return None
+    return row.get(key)
+
+
+def _resolve_price(country_type: str, product_row: Optional[Dict[str, object]], freight_row: Optional[Dict[str, object]]) -> Optional[object]:
+    price_key = "kogan_au_price" if country_type == "AU" else "kogan_nz_price"
+    return _get_value(freight_row, price_key)
+
+
+def _resolve_shipping(country_type: str, freight_row: Optional[Dict[str, object]]) -> str:
+    if country_type == "NZ":
+        return "0"
+    else:
+        shipping_type = _get_value(freight_row, "shipping_type")
+        if isinstance(shipping_type, str) and shipping_type.lower() in {"extra3", "extra4", "extra5"}:
+            return "variable"
+        return "0"
+
+
+def _calculate_nz_rrp_and_first_price(price_decimal: Decimal) -> tuple[Decimal, Decimal]:
+    rrp = (price_decimal * Decimal("1.5")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    if price_decimal > Decimal("66.7"):
+        kogan_first_price = (price_decimal * Decimal("0.969")).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+    else:
+        kogan_first_price = (price_decimal - Decimal("2.01")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    return rrp, kogan_first_price
+
+
+def _resolve_rrp_and_first_price(
+    country_type: str,
+    price_val: Optional[object],
+    product_row: Optional[Dict[str, object]],
+    freight_row: Optional[Dict[str, object]],
+) -> tuple[Optional[object], Optional[object]]:
+    if country_type == "AU":
+        rrp_val = _get_value(product_row, "rrp")
+        kogan_first_price_val = _get_value(freight_row, "kogan_k1_price")
+        return rrp_val, kogan_first_price_val
+
+    price_decimal = _to_decimal(price_val)
+    if price_decimal is None:
+        return None, None
+    return _calculate_nz_rrp_and_first_price(price_decimal)
+
+
+def _to_decimal(value: object) -> Optional[Decimal]:
+    if value is None:
+        return None
     if isinstance(value, Decimal):
-        return value == Decimal("0")
+        return value
     if isinstance(value, (int, float)):
-        return abs(float(value)) < 0.0005
-    return False
+        try:
+            return Decimal(str(value))
+        except (InvalidOperation, ValueError):
+            return None
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return None
+        try:
+            return Decimal(stripped)
+        except (InvalidOperation, ValueError):
+            return None
+    return None
 
-
-def _zero_like(value: object) -> object:
-    if isinstance(value, Decimal):
-        return Decimal("0")
-    if isinstance(value, float):
-        return 0.0
-    if isinstance(value, int):
-        return 0
-    return 0
 
 
 def _values_different(new_val: object, old_val: object) -> bool:
