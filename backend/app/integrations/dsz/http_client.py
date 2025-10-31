@@ -144,20 +144,20 @@ class DSZHttpClient:
                 # 打印 resp 的关键信息，避免过长输出（截断 body 到 1000 字符）
                 try:
                     info_msg = f"DSZ response: {method} {url} -> {resp.status_code}"
-                    logger.debug(info_msg)
-                    logger.debug("DSZ response headers: %s", dict(resp.headers))
+                    # logger.debug(info_msg)
+                    # logger.debug("DSZ response headers: %s", dict(resp.headers))
                     body_text = resp.text or ""
                     try:
                         parsed = resp.json()
                         pretty = json.dumps(parsed, ensure_ascii=False, indent=2)
                     except Exception:
                         pretty = body_text
-                    logger.debug("DSZ response body (truncated 1000 chars): %s")
+                    logger.debug("DSZ response body: %s", pretty)
 
                     # Also print to stdout
-                    print(info_msg)
-                    print("DSZ response headers:", dict(resp.headers))
-                    print("DSZ response body (truncated 1000 chars):", pretty)
+                    # print(info_msg)
+                    # print("DSZ response headers:", dict(resp.headers))
+                    # print("DSZ response body (truncated 1000 chars):", pretty)
                 except Exception:
                     logger.exception("Failed to log DSZ response")
 

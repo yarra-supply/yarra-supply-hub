@@ -425,6 +425,7 @@ def process_chunk(run_id: str, chunk_idx: int,
             if std:  # 注入给 normalizer
                 raw_for_norm["_zone_standard"] = std
                 
+            # dsz + shopify 归一化内部字段
             n = normalize_dsz_product(raw_for_norm)
 
 

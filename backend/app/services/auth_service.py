@@ -11,6 +11,12 @@ from app.repository.user_repo import get_by_username
 
 
 logger = logging.getLogger(__name__)
+# logger.setLevel(logging.INFO)
+# if not logger.handlers:
+#     parent_logger = logging.getLogger("uvicorn.error")
+#     if parent_logger.handlers:
+#         logger.handlers = parent_logger.handlers
+#         logger.propagate = False
 
 
 COOKIE_NAME = settings.COOKIE_NAME
@@ -94,10 +100,14 @@ def authenticate_user(db: Session, username: str, password: str) -> User | None:
     - 读出 user_id，没有去 Redis/DB 用 sessionId 回表找用户会话
 '''
 def get_current_user(request: Request, db: Session = Depends(get_db)) -> User:
+
+    has_cookie = COOKIE_NAME in request.cookies
+    logger.debug("get_current_user: cookie_name=%s has_cookie=%s", COOKIE_NAME, has_cookie)
+
     """从 Cookie 取出 JWT 并校验"""
     raw = request.cookies.get(COOKIE_NAME)
     if not raw:
-        print(f"get_current_user: missing {COOKIE_NAME} cookie, headers={dict(request.headers)}")/
+        print(f"get_current_user: missing {COOKIE_NAME} cookie, headers={dict(request.headers)}")
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
     payload = decode_token(raw)
     if not payload or "user_id" not in payload:
@@ -108,4 +118,12 @@ def get_current_user(request: Request, db: Session = Depends(get_db)) -> User:
     if not user or not user.is_active:
         logger.warning("get_current_user: user %s disabled or not found", payload.get("user_id"))
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User disabled")
+    
+    # 关键：成功路径打印一行你要看的 id/username（还带上 IP/UA，排查更方便）
+    client_ip = getattr(request.client, "host", "?")
+    ua = request.headers.get("user-agent", "?")
+    logger.info("get_current_user OK: user_id=%s username=%s ip=%s ua=%s", user.id, user.username, client_ip, ua)
+    # 若想在 docker 日志里更直观，也可以再来一行 print（可选）
+    print(f"[auth] get_current_user OK: user_id={user.id} username={user.username} ip={client_ip}")
+
     return user
