@@ -1,4 +1,6 @@
 
+import logging
+
 from fastapi import Depends, HTTPException, status, Request, Response
 from sqlalchemy.orm import Session
 from app.db.session import get_db
@@ -6,6 +8,9 @@ from app.core.security import verify_password, create_access_token, decode_token
 from app.core.config import settings
 from app.db.model.user import User
 from app.repository.user_repo import get_by_username
+
+
+logger = logging.getLogger(__name__)
 
 
 COOKIE_NAME = settings.COOKIE_NAME
@@ -92,12 +97,15 @@ def get_current_user(request: Request, db: Session = Depends(get_db)) -> User:
     """从 Cookie 取出 JWT 并校验"""
     raw = request.cookies.get(COOKIE_NAME)
     if not raw:
+        print(f"get_current_user: missing {COOKIE_NAME} cookie, headers={dict(request.headers)}")/
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
     payload = decode_token(raw)
     if not payload or "user_id" not in payload:
+        logger.warning("get_current_user: invalid token payload, headers=%s", dict(request.headers))
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
     
     user = db.get(User, payload["user_id"])
     if not user or not user.is_active:
+        logger.warning("get_current_user: user %s disabled or not found", payload.get("user_id"))
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User disabled")
     return user

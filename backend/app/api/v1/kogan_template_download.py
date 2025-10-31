@@ -53,6 +53,14 @@ def create_kogan_template_export(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    # Debug: print function args to stdout/log so you can inspect current_user
+    try:
+        user_dict = {col.name: getattr(current_user, col.name) for col in current_user.__table__.columns}
+    except Exception:
+        user_dict = repr(current_user)
+    logger.info("create_kogan_template_export called, country_type=%s, current_user=%s", country_type, user_dict)
+    print("create_kogan_template_export called, country_type=", country_type, "current_user=", user_dict)
+
     try:
         job = create_kogan_export_job(
             db=db,
@@ -153,6 +161,15 @@ def apply_kogan_export(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    
+    # Debug: print function args to stdout/log so you can inspect current_user
+    try:
+        user_dict = {col.name: getattr(current_user, col.name) for col in current_user.__table__.columns}
+    except Exception:
+        user_dict = repr(current_user)
+    logger.info("apply_kogan_export called, current_user=%s", user_dict)
+    print("apply_kogan_export called, current_user=", user_dict)
+
     try:
         job = apply_export_job(
             db=db,
