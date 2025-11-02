@@ -85,9 +85,10 @@ class Settings(BaseSettings):
     DSZ_API_EMAIL: Optional[str] = Field(None, alias="DSZ_API_EMAIL")
     DSZ_API_PASSWORD: Optional[str] = Field(None, alias="DSZ_API_PASSWORD")
     # DSZ_API_TOKEN: Optional[str] = Field(None, alias="DSZ_API_TOKEN")                       # 方式二（可选）：预置 token（测试/临时），为空则走 /auth
-    DSZ_RATE_LIMIT_PER_MIN: int = Field(60, ge=1, le=600, alias="DSZ_RATE_LIMIT_PER_MIN")     # 每分钟 60
+    DSZ_RATE_LIMIT_PER_MIN: int = Field(100, ge=1, le=600, alias="DSZ_RATE_LIMIT_PER_MIN")    # 每分钟 100
     DSZ_CONNECT_TIMEOUT: int = Field(10, ge=1, alias="DSZ_CONNECT_TIMEOUT")
     DSZ_READ_TIMEOUT: int = Field(30, ge=1, alias="DSZ_READ_TIMEOUT")
+
     DSZ_TOKEN_TTL_SEC: int = Field(15 * 60, ge=60, alias="DSZ_TOKEN_TTL_SEC")                 # /auth 未含 exp 时的兜底 TTL
     DSZ_DETAIL_LIST_MAX_PER_CHUNK: int = 300
 
@@ -103,9 +104,10 @@ class Settings(BaseSettings):
     DSZ_ZONE_RATES_METHOD: str = "POST"   # 文档是 POST
     DSZ_ZONE_RATES_LIMIT: int = 160       # 官方上限 160
 
-    DSZ_GLOBAL_RL_ENABLED: bool = False
-    DSZ_GLOBAL_RATE_LIMIT_REDIS_URL: str | None = None
-    DSZ_GLOBAL_RL_MAX_RPM: int = 60  # 每分钟最大速率（rate）
+    # ========= DSZ 全局限流配置 =========
+    DSZ_GLOBAL_RL_ENABLED: bool = True      # 是否启用全局限流
+    DSZ_GLOBAL_RATE_LIMIT_REDIS_URL: str = "redis://redis:6379/0"
+    DSZ_GLOBAL_RL_MAX_RPM: int = 100  # 每分钟最大速率（rate）
     DSZ_GLOBAL_RL_BURST: int = 5     # 桶容量
     DSZ_GLOBAL_RL_KEY_PREFIX: str = "dsz:rl"
     DSZ_ENV: str = "dev"  # 用于区分不同环境拼 key

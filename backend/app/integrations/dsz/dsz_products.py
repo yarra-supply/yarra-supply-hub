@@ -114,6 +114,7 @@ class DSZProductsAPI:
                         print("DSZ payload (fallback):")
                         pprint(payload)
 
+                    # 解析 items 列表
                     items = self._extract_items(payload)  # 严格：必须是 list[dict]  
                     
                     break  # 成功
@@ -265,6 +266,7 @@ class DSZProductsAPI:
         v = item.get(self.payload_sku_field)
         return v if isinstance(v, str) and v else None    
     
+
 
     # ----------------- /v2/get_zone_rates -----------------
     """

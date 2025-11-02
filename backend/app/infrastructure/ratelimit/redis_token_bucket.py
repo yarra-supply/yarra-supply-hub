@@ -1,5 +1,4 @@
 
-# app/infrastructure/ratelimit/redis_token_bucket.py
 from __future__ import annotations
 import time, logging
 from typing import Optional, Tuple
@@ -19,6 +18,7 @@ except Exception:
       1) 用 Redis 服务器时间（TIME）计算补桶
       2) 若 tokens >= 1 则消耗 1 个并 allowed=1；否则返回需要等待的毫秒 wait_ms
       3) 持久化 tokens/ts，并设置 TTL（空闲自动清理）
+      令牌桶的 Lua 脚本利用 Redis 的 TIME 命令按服务器时间补充令牌，保证多机多进程共用一个速率窗口
 """
 class RedisTokenBucketLimiter:
     

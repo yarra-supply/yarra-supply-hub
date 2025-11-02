@@ -24,6 +24,9 @@ from app.db.model.kogan_au_template import KoganTemplateAU, KoganTemplateNZ
 from app.db.model.kogan_export_job import KoganExportJob, KoganExportJobSku
 from app.db.model.product import SkuInfo
 from app.db.session import SessionLocal
+from app.db.model.user import User
+
+from app.services.auth_service import get_current_user
 
 
 FAKE_USER = {"username": "integration-debug"}
@@ -111,10 +114,11 @@ def test_kogan_template_export_download_apply_flow():
     try:
         # --- 1. 创建导出任务 ---
         with SessionLocal() as db:
+            current_user = _ensure_test_user(db)
             payload = create_kogan_template_export(
                 country_type="AU",
                 db=db,
-                current_user=FAKE_USER,
+                current_user=current_user,
             )
         job_id = payload["job_id"]
         assert job_id.startswith("AU_"), job_id
@@ -181,3 +185,58 @@ def test_kogan_template_export_download_apply_flow():
     finally:
         with SessionLocal() as db:
             _cleanup(db, test_sku, job_id)
+
+
+@pytest.mark.integration
+def test_create_kogan_template_export_integration():
+    if not _db_ready():
+        pytest.skip("Database connection is not available for Kogan template integration test")
+
+    # test_sku = f"DEBUG-KOGAN-CREATE-{uuid.uuid4().hex[:6]}"
+    # _prepare_seed_data(test_sku)
+
+    job_id: str | None = None
+    try:
+        with SessionLocal() as db:
+            current_user=_ensure_test_user(db)
+            payload = create_kogan_template_export(
+                country_type="NZ",
+                db=db,
+                current_user=current_user,
+            )
+
+        job_id = payload["job_id"]
+        assert job_id.startswith("NZ_")
+        assert payload["row_count"] == 1
+
+        with SessionLocal() as db:
+            job = db.get(KoganExportJob, job_id)
+            assert job is not None
+            assert job.country_type == "AU"
+            assert job.row_count == 1
+            assert job.status == "exported"
+
+    finally:
+        print("Cleaning up test data...")
+        # with SessionLocal() as db:
+        #     _cleanup(db, test_sku, job_id)
+
+
+def _ensure_test_user(db) -> User:
+    user = (
+        db.query(User)
+        .filter(User.username == "integration-debug")
+        .one_or_none()
+    )
+    if user is None:
+        user = User(
+            username="integration-debug",
+            hashed_password="fake-hash",
+            full_name="Integration Debug",
+            is_active=True,
+            is_superuser=False,
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+    return user

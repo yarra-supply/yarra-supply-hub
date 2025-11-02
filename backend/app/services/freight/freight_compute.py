@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 from dataclasses import dataclass
+from datetime import datetime, date, timedelta
 from typing import List, Dict, Any, Optional, Iterable, Mapping
 from statistics import median
 import hashlib, math
 from decimal import Decimal, ROUND_HALF_UP
+from zoneinfo import ZoneInfo
+
+from app.core.config import settings
 
 
 # --------- 常量与工具 ----------
@@ -14,6 +18,7 @@ STATES_METRO = ("ACT","NSW_M","QLD_M","SA_M","TAS_M","VIC_M","WA_M")
 STATES_RURAL = ("NSW_R","QLD_R","SA_R","TAS_R","VIC_R","WA_R")
 NZ_KEY = "freight_nz"  # 供未来扩展；当前计算聚焦 AU
 SENTINEL_NO_SERVICE = 9000  # 9999/9000 视为无服务，可放配置或 DB
+_FREIGHT_TZ = ZoneInfo(getattr(settings, "CELERY_TIMEZONE", "Australia/Melbourne"))
 
 
 
@@ -64,14 +69,13 @@ class FreightInputs:
     special_price_end_date: Optional[Any] = None
 
     # 尺寸/重量
-    length: Optional[float] = None
-    width: Optional[float] = None
-    height: Optional[float] = None
+    # length: Optional[float] = None
+    # width: Optional[float] = None
+    # height: Optional[float] = None
     weight: Optional[float] = None
     cbm: Optional[float] = None
-
     # 幂等字段
-    attrs_hash_current: Optional[str] = None
+    # attrs_hash_current: Optional[str] = None
 
     # 各州运费（17 个字段 + remote + nz）
     act: Optional[float] = None
@@ -400,13 +404,40 @@ def compute_weight(
 
 # --------- 价格计算 ----------
 """
-生效价格：有 Special Price 用 Special, 否则用 regular price
-如果special_date明天到期，则不使用special_price? 
+生效价格：默认使用特价；若无特价则回落到常规价。
+若特价结束日期早于或等于“明天”（本地时区），则提前回落到常规价。
 """
-# 使用第一个公式的地方？
-def compute_selling_price(price: Optional[float], special_price: Optional[float]) -> Optional[Decimal]:
+def compute_selling_price(
+    price: Optional[float],
+    special_price: Optional[float],
+    special_price_end_date: Optional[Any] = None,
+) -> Optional[Decimal]:
     sp = _d(special_price)
     rg = _d(price)
+
+    if sp is None:
+        return rg
+
+    end_date: Optional[date] = None
+    if special_price_end_date:
+        if isinstance(special_price_end_date, datetime):
+            dt = special_price_end_date
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=_FREIGHT_TZ)
+            end_date = dt.astimezone(_FREIGHT_TZ).date()
+        elif isinstance(special_price_end_date, date):
+            end_date = special_price_end_date
+        else:
+            try:
+                end_date = datetime.strptime(str(special_price_end_date)[:10], "%Y-%m-%d").date()
+            except Exception:
+                end_date = None
+
+    if end_date:
+        today = datetime.now(_FREIGHT_TZ).date()
+        if end_date <= (today + timedelta(days=1)):
+            return rg
+
     return sp if sp is not None else rg
 
 
@@ -509,7 +540,7 @@ def compute_all(i: FreightInputs,
     fr = i.state_freight or {}
 
     # todo 替换字段到DB cfg 功能测试完再换就行
-    selling_price = compute_selling_price(i.price, i.special_price)                                   # 生效价格
+    selling_price = compute_selling_price(i.price, i.special_price, i.special_price_end_date)         # 生效价格
     adjust = compute_adjust(selling_price, cfg=cfg)                                                   # 低价调整
 
     same_shipping = compute_same_shipping(fr)

@@ -24,21 +24,6 @@ pytestmark = [
 ]
 
 
-# 测试sku 
-def _sample_skus() -> list[str]:
-    return [
-        "V420-CSST-WPOTGSET-C",
-        "V952-GYBGSFS18INCH2HS2V3",
-        "V922-AWD-D0532-PHOALB600-BR",
-        "BW-CLEANER-58771",
-        "EAC-C-RC-01L-BK",
-        "GL-ECO-3T-1000",
-        "V201-HAZ0000WH8AU",
-        "V240-CMT-JFA-180-LED",
-        "V201-HOLD6079WH8AU",
-        "V178-36220",
-    ]
-
 
 @pytest.fixture(scope="function")
 def dsz_http_client() -> Iterable[DSZHttpClient]:
@@ -181,3 +166,87 @@ def test_session_can_close_safely():
 # 1、分批
 # 2、异常
 # 3、一分钟超过60次
+
+def test_get_products_by_skus_respects_rate_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    """调用 get_products_by_skus 两次，确认底层节流间隔满足配置。"""
+
+    from app.integrations.dsz import dsz_products
+
+    skus = _sample_skus()
+    if not skus:
+        pytest.skip("Provide TEST_DSZ_SKU or TEST_DSZ_SKUS to run this test.")
+
+    http_client = DSZHttpClient()
+    monkeypatch.setattr(
+        dsz_products,
+        "DSZProductsAPI",
+        lambda: dsz_products.DSZProductsAPI(http=http_client),
+    )
+
+    try:
+        result1 = dsz_products.get_products_by_skus(skus[:5])
+        first_sent = http_client._last_request_ts  # type: ignore[attr-defined]
+
+        result2 = dsz_products.get_products_by_skus(skus[:5])
+        second_sent = http_client._last_request_ts  # type: ignore[attr-defined]
+    finally:
+        http_client._session.close()  # type: ignore[attr-defined]
+
+    assert isinstance(result1, list), "Expected list of products on first call"
+    assert isinstance(result2, list), "Expected list of products on second call"
+
+    interval = 60.0 / float(http_client.rate_limit_per_min)
+    assert second_sent >= first_sent, "Second call timestamp should not precede first call"
+    delta = second_sent - first_sent
+    assert delta >= interval - 0.15, "Calls should be spaced by the configured rate limit interval"
+
+
+def test_get_zone_rates_by_skus_respects_rate_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    """调用 get_zone_rates_by_skus 两次，确认共享 client 时节流生效。"""
+
+    from app.integrations.dsz import dsz_products
+
+    skus = _sample_skus()
+    if not skus:
+        pytest.skip("Provide TEST_DSZ_SKU or TEST_DSZ_SKUS to run this test.")
+
+    http_client = DSZHttpClient()
+    monkeypatch.setattr(
+        dsz_products,
+        "DSZProductsAPI",
+        lambda: dsz_products.DSZProductsAPI(http=http_client),
+    )
+
+    try:
+        result1 = dsz_products.get_zone_rates_by_skus(skus[:5])
+        first_sent = http_client._last_request_ts  # type: ignore[attr-defined]
+
+        result2 = dsz_products.get_zone_rates_by_skus(skus[:5])
+        second_sent = http_client._last_request_ts  # type: ignore[attr-defined]
+    finally:
+        http_client._session.close()  # type: ignore[attr-defined]
+
+    assert isinstance(result1, list), "Zone rate response should be a list"
+    assert isinstance(result2, list), "Zone rate response should be a list"
+
+    interval = 60.0 / float(http_client.rate_limit_per_min)
+    assert second_sent >= first_sent, "Second call timestamp should not precede first call"
+    delta = second_sent - first_sent
+    assert delta >= interval - 0.15, "Calls should be spaced by the configured rate limit interval"
+
+
+# 测试sku 
+def _sample_skus() -> list[str]:
+    return [
+        "V420-CSST-WPOTGSET-C",
+        "V952-GYBGSFS18INCH2HS2V3",
+        "V922-AWD-D0532-PHOALB600-BR",
+        "BW-CLEANER-58771",
+        "EAC-C-RC-01L-BK",
+        "GL-ECO-3T-1000",
+        "V201-HAZ0000WH8AU",
+        "V240-CMT-JFA-180-LED",
+        "V201-HOLD6079WH8AU",
+        "V178-36220",
+    ]
+

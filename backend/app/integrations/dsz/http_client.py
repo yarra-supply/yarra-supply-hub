@@ -54,18 +54,23 @@ class DSZHttpClient:
         token_ttl_fallback_sec: Optional[int] = None,
         session: Optional[requests.Session] = None,
     ) -> None:
+        
         """初始化客户端，允许覆盖基础配置以便测试或多账号场景。"""
         self.base_url = (base_url or str(settings.DSZ_BASE_URL)).rstrip("/") + "/"
         self.email = email or settings.DSZ_API_EMAIL
         self.password = password or settings.DSZ_API_PASSWORD
         self.connect_timeout = connect_timeout or settings.DSZ_CONNECT_TIMEOUT
         self.read_timeout = read_timeout or settings.DSZ_READ_TIMEOUT
+
         self.rate_limit_per_min = rate_limit_per_min or settings.DSZ_RATE_LIMIT_PER_MIN
         self.token_ttl_fallback_sec = token_ttl_fallback_sec or settings.DSZ_TOKEN_TTL_SEC
 
         self._session = session or requests.Session()
         self._token: Optional[_Token] = None
         self._last_request_ts: float = 0.0
+
+        # todo test
+        # DSZHttpClient 构造函数内部会尝试构建一个全局限流器: 
         # 用全局限流：Redis 构造一个令牌桶, 通过名字组合出Redis，可以不同机器公用
         self._global_limiter = RedisTokenBucketLimiter.from_settings(vendor="dsz", account=self.email)
 
@@ -79,7 +84,7 @@ class DSZHttpClient:
         resp = self._request("GET", path, params=params, **kwargs)
         return self._as_json(resp)
     
-    # 不需要
+     # test ✅
     def post_json(self, path: str, json_body: Optional[Dict[str, Any]] = None, **kwargs) -> Any:
         """发送 POST 请求并返回解析后的 JSON，附带鉴权/重试/限流。"""
         resp = self._request("POST", path, json=json_body, **kwargs)
@@ -141,8 +146,8 @@ class DSZHttpClient:
             try:
                 resp = self._session.request(method, url, headers=headers, timeout=timeout, **kwargs)
 
-                # 打印 resp 的关键信息，避免过长输出（截断 body 到 1000 字符）
                 try:
+                    # 打印 resp 的关键信息，避免过长输出（截断 body 到 1000 字符）
                     info_msg = f"DSZ response: {method} {url} -> {resp.status_code}"
                     # logger.debug(info_msg)
                     # logger.debug("DSZ response headers: %s", dict(resp.headers))
@@ -168,7 +173,7 @@ class DSZHttpClient:
                     raise DSZClientError(f"request error: {e}") from e
                 continue
 
-            # 返回单调递增的时钟秒数：每次成功发出 HTTP 请求后记录“上一次请求的发出时刻”
+            # 检查上一次发送时间：每次成功发出 HTTP 请求后记录“上一次请求的发出时刻”
             self._last_request_ts = time.monotonic()
 
             # error2: 401 未授权：只做一次自动刷新
@@ -209,31 +214,36 @@ class DSZHttpClient:
 
 
 
-    # ---------- Helpers ----------
+
+    '''
+    限流器
+      - 优先使用 Redis 令牌桶限流；不可用时退回进程内节流
+    '''
     # todo test
     def _respect_rate_limit(self) -> None:
-        """优先使用 Redis 令牌桶限流；不可用时退回进程内节流。"""
-        # --- 全局限流 --
+        # --- 1-全局限流: _global_limiter is RedisTokenBucketLimiter
         limiter = getattr(self, "_global_limiter", None)  # 如果实例上有 _global_limiter 属性，就取出来
         if limiter is not None:
             try:
-                for _ in range(20):     # 尝试最多 20 次抢 token ~20 * 5s = 100s（通常远小于此）
+                # 尝试最多 10 次抢 token ~10 * 5s = 50s（通常远小于此）
+                for _ in range(10):
                     allowed, wait_ms = limiter.acquire_once()    # wait_ms 令牌桶算法内部计算出来的
                     if allowed:  # 抢到了一个 token，可以立即发请求
                         return
-                    
+
+                    # 等待一段时间再重试
                     time.sleep(max(0.001, (wait_ms or 1000) / 1000.0))
 
-                # 超过 20 次仍未拿到：最后再 sleep 一会儿作为退避，然后返回让上层重试节奏接管
-                time.sleep(1.0)
+                time.sleep(1.0)       # 多次尝试仍未抢到，强制等待 1 秒再继续（避免过快循环）
             except Exception as e:
                 logger.warning("Global rate-limit disabled due to Redis error: %s; falling back to process-local.", e)
                 
-        # --- 进程内节流（兜底） ---
+        # --- 2-进程内节流（兜底） ---
         if not self.rate_limit_per_min or self.rate_limit_per_min <= 0:
             return
         interval = 60.0 / float(self.rate_limit_per_min)
         now = time.monotonic()
+
         delta = now - self._last_request_ts
         if delta < interval:
             time.sleep(interval - delta)

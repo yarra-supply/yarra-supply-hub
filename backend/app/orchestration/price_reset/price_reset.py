@@ -66,7 +66,7 @@ def kick_price_reset() -> dict:
             batch.append((sku, price, special))
 
             if len(batch) >= _UPSERT_CHUNK:
-                # 批量重新计算kogan au price
+                # 批量重新计算所有price，更新to_update
                 _process_batch(db, batch, to_update)
                 processed += len(batch)
                 batch.clear()
@@ -80,13 +80,13 @@ def kick_price_reset() -> dict:
         
         # 收尾
         if batch:
-            # 批量重新计算kogan au price
+            # 批量重新计算所有price，更新to_update
             _process_batch(db, batch, to_update)
             processed += len(batch)
             batch.clear()
 
         if to_update:
-            # 只更新变化列
+            # 只更新变化列, 更新后的数据等待 download触发新kogan_template 模版计算
             update_changed_prices(db, to_update, source="price_reset", run_id=run_id)
             db.commit()
             changed_rows += len(to_update)
@@ -113,21 +113,26 @@ def _process_batch(
 ):
     skus = [s for (s, _, _) in batch]
 
-    # 1) 拉取这批 SKU 对应的 运费表旧值
+    # 1) 查询kogan_sku_freight_fee，获取这批 SKU 对应的 运费表旧值
     old_price_map: Dict[str, Dict[str, object]] = load_fee_rows_by_skus(db, skus)
 
-    # 2) 拉各州运费/重量等，供 compute_all 使用
+    # 2) 查询sku_info, 拉各州运费/重量等，供 compute_all 使用
     product_freight_snap = load_state_freight_by_skus(db, skus)
 
     # 3) by sku 处理
-    for sku, price, special_price in batch:
+    for sku, price in batch:
         one_product = product_freight_snap.get(sku) or {}
         one_old_price = old_price_map.get(sku) or {}
 
         # 重新计算价格：强制 selling = price
         inputs = FCInputs(
             price=price,
-            special_price=None,  # 忽略 special，强制还原
+
+            # core logic: 忽略 special, 强制还原
+            special_price=None,  
+
+            weight=_as_float(one_product.get("weight")),
+            cbm=_as_float(one_product.get("cbm")),
             act=one_product.get("freight_act"),
             nsw_m=one_product.get("freight_nsw_m"),
             nsw_r=one_product.get("freight_nsw_r"),
@@ -145,14 +150,13 @@ def _process_batch(
             nt_r=one_product.get("freight_nt_r"),
             remote=one_product.get("remote"),
             nz=one_product.get("freight_nz"),
-            weight=_as_float(one_product.get("weight")),
-            cbm=None,  # 如需体积重可在此补充
         )
         out = compute_all(inputs)
 
         # 新值（保留两位小数做对比/写回）
         new_vals = {
             "selling_price": _q2(out.selling_price),
+            "shopify_price": _q2(out.shopify_price),
             "kogan_au_price": _q2(out.kogan_au_price),
             "kogan_k1_price": _q2(out.kogan_k1_price),
             "kogan_nz_price": _q2(out.kogan_nz_price),
