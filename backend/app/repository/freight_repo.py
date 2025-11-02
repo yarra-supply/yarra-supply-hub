@@ -323,6 +323,7 @@ def update_changed_prices(
     if not changed:
         return
     
+    # todo 都是by sku 单个更新，可以改成批量？
     # cols: [old, new]
     for sku_code, cols in changed:
         sets, params = [], {"sku": sku_code, "src": source, "rid": run_id}

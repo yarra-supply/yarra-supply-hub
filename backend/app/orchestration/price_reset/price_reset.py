@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 # 可调参数（含默认值）
 _DB_PAGE_SIZE = int(getattr(settings, "PRICE_RESET_DB_PAGE", 1000))          # DB 分页
 _UPSERT_CHUNK = int(getattr(settings, "PRICE_RESET_UPSERT_CHUNK", 500))      # 每批 upsert 的行数
-_CELERY_TZ = getattr(settings, "CELERY_TIMEZONE", "Australia/Melbourne")
+_CELERY_TZ = ZoneInfo(getattr(settings, "CELERY_TIMEZONE", "Australia/Melbourne"))
 
 # ---- 业务字段名（结果表需要维护的列）----
 _OUTPUT_FIELDS = (
@@ -162,9 +162,9 @@ def _process_batch(
             # core logic: 忽略 special, 强制还原
             special_price=None,
             special_price_end_date=one_product.get("special_price_end_date"),
-            length=_as_float(one_product.get("length")),
-            width=_as_float(one_product.get("width")),
-            height=_as_float(one_product.get("height")),
+            # length=_as_float(one_product.get("length")),
+            # width=_as_float(one_product.get("width")),
+            # height=_as_float(one_product.get("height")),
 
             weight=_as_float(one_product.get("weight")),
             cbm=_as_float(one_product.get("cbm")),
