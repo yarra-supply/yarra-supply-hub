@@ -190,9 +190,9 @@ def load_inputs_for_skus(db: Session, skus: List[str]) -> List[Tuple[str, Freigh
             price=getattr(r, "price", None),
             special_price=getattr(r, "special_price", None),
             special_price_end_date=getattr(r, "special_price_end_date", None),
-            length=getattr(r, "length", None),
-            width=getattr(r, "width", None),
-            height=getattr(r, "height", None),
+            # length=getattr(r, "length", None),
+            # width=getattr(r, "width", None),
+            # height=getattr(r, "height", None),
             weight=getattr(r, "weight", None),
             cbm=getattr(r, "cbm", None),
 
@@ -272,14 +272,34 @@ def upsert_freight_results(db: Session, rows: List[Dict[str, Any]]) -> Tuple[int
 # =========================== price reset use ==========================
 '''
 读取旧值（对比用）
-读取 kogan_sku_freight_fee 中 4 个目标列（+可选的 run/dirty 标记）做旧值对比。
+读取 kogan_sku_freight_fee 中业务字段（不含时间列），用于新旧结果对比。
 '''
 def load_fee_rows_by_skus(db: Session, skus: List[str]) -> Dict[str, dict]:
     if not skus:
         return {}
     sql = text("""
-        SELECT sku_code, selling_price, kogan_au_price, kogan_k1_price, kogan_nz_price,
-               kogan_dirty_au, kogan_dirty_nz
+        SELECT
+            sku_code,
+            adjust,
+            same_shipping,
+            shipping_ave,
+            shipping_ave_m,
+            shipping_ave_r,
+            shipping_med,
+            remote_check,
+            rural_ave,
+            weighted_ave_s,
+            shipping_med_dif,
+            weight,
+            cubic_weight,
+            shipping_type,
+            price_ratio,
+            selling_price,
+            shopify_price,
+            kogan_au_price,
+            kogan_k1_price,
+            kogan_nz_price,
+            attrs_hash_last_calc
         FROM kogan_sku_freight_fee
         WHERE sku_code = ANY(:skus)
     """)

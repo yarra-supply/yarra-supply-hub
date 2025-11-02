@@ -223,18 +223,23 @@ def load_variant_ids_by_skus(db: Session, skus: list[str]) -> dict[str, Optional
 
 # ===================== 流式拉取“price reset 候选” =====================
 """
-  仅返回 (sku_code, price, special_price)，满足 special_price_end_date <= target_date 的候选。
-  流式分页，避免一次性拉大表。
+  流式拉取“price reset”候选 SKU：special_price_end_date 早于或等于 target_date。
+  仅返回 sku_code，按 sku 排序分页。
 """
-def iter_price_reset_candidates(db: Session, *, target_date, 
-                                page_size: int = 1000) -> Iterator[Tuple[str, float, float | None]]:
-   
+def iter_price_reset_candidates(
+    db: Session,
+    *,
+    target_date,
+    page_size: int = 1000,
+) -> Iterator[Tuple[str]]:
+
     offset = 0
     sql = text("""
-        SELECT sku_code, price, special_price
+        SELECT sku_code
         FROM sku_info
         WHERE special_price_end_date IS NOT NULL
           AND special_price_end_date <= :target_date
+          AND price IS NOT NULL
         ORDER BY sku_code
         LIMIT :limit OFFSET :offset
     """)
@@ -244,11 +249,7 @@ def iter_price_reset_candidates(db: Session, *, target_date,
         if not rows:
             break
         for r in rows:
-            yield (
-                r["sku_code"],
-                float(r["price"]),
-                (float(r["special_price"]) if r["special_price"] is not None else None),
-            )
+            yield r["sku_code"]
         offset += page_size
 
 
@@ -469,7 +470,11 @@ def load_state_freight_by_skus(db: Session, skus: List[str]) -> Dict[str, dict]:
     
     sql = text(f"""
         SELECT
-            sku_code, weight, length, width, height, cbm,
+            sku_code,
+            price,
+            special_price,
+            special_price_end_date,
+            weight, length, width, height, cbm,
             freight_act, freight_nsw_m, freight_nsw_r, freight_qld_m, freight_qld_r,
             freight_sa_m, freight_sa_r, freight_tas_m, freight_tas_r,
             freight_vic_m, freight_vic_r, freight_wa_m, freight_wa_r,
@@ -708,52 +713,6 @@ def export_products_csv_iter_sql(
     if left:
         yield left
 
-
-
-
-# ==== Price Reset: 候选集流式读取（special 结束日 = target_date） ====
-"""
-    流式分页返回需要“price 还原”的候选 (sku_code, shopify_variant_id, price)
-    选择条件：
-      - special_price_end_date == target_date
-      - shopify_variant_id is not null
-      - price is not null
-    返回的 variant_id 是数据库中存储的原值（可能是裸 ID 或 GID）,
-    GID 化请在上层做（编排层更清楚外部系统需要的格式）。
-"""
-def iter_price_reset_candidates(
-    db: Session,
-    *,
-    target_date,              # 明天的日期（date）
-    page_size: int = 1000,    # 分页大小（5k 数据建议 500~2000）
-) -> Iterator[Tuple[str, str, Decimal]]:
-
-    offset = 0
-    while True:
-        rows = db.execute(
-            select(SkuInfo.sku_code, SkuInfo.shopify_variant_id, SkuInfo.price)
-            .where(
-                and_(
-                    SkuInfo.special_price_end_date <= target_date,
-                    SkuInfo.shopify_variant_id.isnot(None),
-                    SkuInfo.price.isnot(None),
-                )
-            )
-            .order_by(SkuInfo.sku_code)  # 稳定分页
-            .limit(page_size)
-            .offset(offset)
-        ).all()
-
-        if not rows:
-            break
-
-        for sku, vid, price in rows:
-            # 统一 Decimal；None 已在 where 里过滤
-            yield sku, str(vid), Decimal(str(price))
-
-        if len(rows) < page_size:
-            break
-        offset += page_size
 
 
 
