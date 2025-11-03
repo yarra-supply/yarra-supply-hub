@@ -107,26 +107,21 @@ async def bulk_finish(
     try:
         node = client.get_bulk_operation_by_id(bulk_gid)
     except Exception as e:
-        # # 失败时安排兜底轮询（不阻塞 webhook；防止 Shopify 重试）
-        # try:
-        #     run_id = _run_id_by_bulk(bulk_gid)
-        #     if run_id:                                # 轮询任务的 task_id 固定，避免重复投递
-        #         poll_bulk_until_ready.apply_async(  
-        #             args=[run_id],
-        #             task_id=f"poll:{bulk_gid}",
-        #             countdown=20
-        #         )
-        # except Exception:
-        #     pass             # 兜底失败也不影响 200
+        # 失败时安排兜底轮询（不阻塞 webhook；防止 Shopify 重试）
+        try:
+            run_id = _run_id_by_bulk(bulk_gid)
+            if run_id:                                # 轮询任务的 task_id 固定，避免重复投递
+                poll_bulk_until_ready.apply_async(  
+                    args=[run_id],
+                    task_id=f"poll:{bulk_gid}",
+                    countdown=20
+                )
+        except Exception:
+            pass             # 兜底失败也不影响 200
         return {"ok": True, "note": f"query error: {type(e).__name__}"}
 
     status = (node.get("status") or "").upper()  # GraphQL 返回通常是大写
     url = node.get("url")
-    # 健壮转换：objectCount 可能是 str/int/None
-    try:
-        object_count = int(node.get("objectCount")) if node.get("objectCount") is not None else 0
-    except Exception:
-        object_count = 0
 
     try:
         root_object_count = (
@@ -136,9 +131,6 @@ async def bulk_finish(
         )
     except Exception:
         root_object_count = None
-
-    if root_object_count is None:
-        root_object_count = object_count
     
 
     # 5) 标记 webhook 到达时间（仅首次）：首次记录 webhook 到达时间（区分 webhook 触发 vs 轮询触发）只在第一次写入
@@ -156,18 +148,17 @@ async def bulk_finish(
 
 
     # 6) 未完成或无 URL：快速返回（5 秒规则），由轮询或后续 webhook 兜底
-    # todo 为什么需要返回objectCount？
     if status != "COMPLETED" or not url:
         return {
             "ok": True,
             "status": status,
-            "objectCount": object_count,
+            # "objectCount": object_count,
             "rootObjectCount": root_object_count,
         }
 
-
     # 7) 已完成：将 URL 投递异步任务（下载/解析/入库）
     try:
+        print(f"[webhook] bulk_operations/finish received for {bulk_gid}, scheduling processing task.")
         handle_bulk_finish.delay(
             bulk_id=bulk_gid, url=url, root_object_count=root_object_count
         )
@@ -179,7 +170,7 @@ async def bulk_finish(
     return {
         "ok": True,
         "status": status,
-        "objectCount": object_count,
+        # "objectCount": object_count,
         "rootObjectCount": root_object_count,
     }
 
