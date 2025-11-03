@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from datetime import datetime, date, time, timedelta, timezone
 from zoneinfo import ZoneInfo
-from typing import Iterable, Optional, Dict, Any, List, Iterator, Tuple
+from typing import Iterable, Optional, Dict, Any, List, Iterator, Tuple, Set
 from decimal import Decimal
 import io, csv, json
 import math
@@ -487,6 +487,56 @@ def load_state_freight_by_skus(db: Session, skus: List[str]) -> Dict[str, dict]:
 
 
 
+# ===================== SKU 清理相关 =====================
+def collect_shopify_skus_for_run(db: Session, run_id: str) -> Set[str]:
+    """
+    从 manifest（product_sync_chunks.sku_codes）中提取本次 run 覆盖的 Shopify SKU。
+    兼容历史格式（对象、数组、字符串），返回去重集合。
+    """
+    sql = text(
+        """
+        SELECT DISTINCT
+               CASE
+                   WHEN jsonb_typeof(elem) = 'object' AND elem ? 'sku'
+                        THEN NULLIF(trim(elem->>'sku'), '')
+                   WHEN jsonb_typeof(elem) = 'array' AND jsonb_array_length(elem) > 0
+                        THEN NULLIF(trim(elem->>0), '')
+                   WHEN jsonb_typeof(elem) = 'string'
+                        THEN NULLIF(trim(both '"' FROM elem::text), '')
+                   ELSE NULL
+               END AS sku
+          FROM product_sync_chunks AS chunk
+         CROSS JOIN LATERAL jsonb_array_elements(chunk.sku_codes) AS elem
+         WHERE chunk.run_id = :run_id
+        """
+    )
+    rows = db.execute(sql, {"run_id": run_id}).mappings().all()
+    return {row["sku"] for row in rows if row["sku"]}
+
+
+
+def purge_sku_info_absent_from(db: Session, keep_skus: Iterable[str]) -> List[str]:
+    """
+    删除 sku_info 中不在 keep_skus 集合内的记录，返回被删除的 SKU 列表。
+    传入空集合时直接跳过，避免误删。
+    """
+    keep_list = [str(s).strip() for s in keep_skus if s and str(s).strip()]
+    if not keep_list:
+        return []
+
+    sql = text(
+        """
+        DELETE FROM sku_info AS s
+         WHERE NOT EXISTS (
+               SELECT 1
+                 FROM unnest(:keep_skus::text[]) AS keep(sku_code)
+                WHERE keep.sku_code = s.sku_code
+         )
+        RETURNING s.sku_code
+        """
+    )
+    deleted = db.execute(sql, {"keep_skus": keep_list}).scalars().all()
+    return list(deleted)
 
 
 # ---------------- Manifest 封装（pending / running / succeeded / failed）---------------- #

@@ -25,6 +25,7 @@ from app.integrations.shopify.payload_utils import normalize_sku_payload
 from app.repository.product_repo import (
     load_existing_by_skus, diff_snapshot, bulk_upsert_sku_info, save_candidates,
     load_variant_ids_by_skus, mark_chunk_running, mark_chunk_succeeded, mark_chunk_failed,
+    collect_shopify_skus_for_run, purge_sku_info_absent_from,
 )
 from app.orchestration.product_sync.scheduler import schedule_chunks_streaming
 from app.orchestration.product_sync.chunk_enricher import enrich_shopify_snapshot
@@ -562,6 +563,7 @@ def finalize_run(results, run_id: str):
     db = SessionLocal()
     failed_chunks = 0
     pending_chunks = 0
+    purge_needed = False
     try:
         rows = (
             db.query(ProductSyncChunk.status,
@@ -587,6 +589,9 @@ def finalize_run(results, run_id: str):
                 pending_chunks += 1
     finally:
         db.close()
+    
+    # 是否需要清理缺失 SKU（仅在无失败、无待处理时触发）
+    purge_needed = (failed_chunks == 0 and pending_chunks == 0)
 
     # 阈值健康度检查与告警（放在落库前后都可，这里先做）
     _maybe_alert_dsz_health(
@@ -618,19 +623,15 @@ def finalize_run(results, run_id: str):
                 pass
 
             db.commit()
-
-
-        # 收尾阶段做缺失 SKU 清理: 本次shopify没有，但系统里有的 SKU, 避免漏删：只删“本次 run 有请求过的 SKU
-
-
-
-
-
-
-
-
     finally:
         db.close()
+
+    # 清理 Shopify 已不存在的 SKU 信息
+    # if purge_needed:
+    #     try:
+    #         _purge_absent_skus(run_id)
+    #     except Exception:
+    #         logger.exception("failed to purge absent skus: run=%s", run_id)
 
     logger.info(
         "final summary: run=%s candidates=%d missing=%d failed_chunks=%d pending_chunks=%d",
@@ -653,6 +654,38 @@ def finalize_run(results, run_id: str):
 
     return {"run_id": run_id, "candidate_skus": len(sku_set)}
 
+
+
+
+"""
+    按当前 run 的 manifest 删除 Shopify 已不存在的历史 SKU。
+    仅在 full sync 成功收尾后调用。
+"""
+def _purge_absent_skus(run_id: str) -> None:
+    db = SessionLocal()
+    removed: List[str] = []
+    try:
+        keep_skus = collect_shopify_skus_for_run(db, run_id)
+        if not keep_skus:
+            logger.warning("skip purge: run=%s has no manifest skus", run_id)
+            return
+
+        removed = purge_sku_info_absent_from(db, keep_skus)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+    if removed:
+        sample = removed[:10]
+        logger.info(
+            "purged %d sku_info rows absent from Shopify for run=%s (sample=%s)",
+            len(removed), run_id, sample,
+        )
+    else:
+        logger.info("sku_info purge found nothing to delete for run=%s", run_id)
 
 
 
