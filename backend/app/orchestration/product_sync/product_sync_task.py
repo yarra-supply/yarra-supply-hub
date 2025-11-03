@@ -41,106 +41,30 @@ logger = logging.getLogger(__name__)
 _shopify = ShopifyClient()  # 单实例即可
 
 
+
+"""
+  调试开关：True 时所有子任务在当前进程内同步执行。
+"""
 def _inline_tasks_enabled() -> bool:
-    """
-    调试开关：True 时所有子任务在当前进程内同步执行。
-    """
     return True
 
 
-def _poll_retry_delay(attempt: int, default_retry_delay: int = 60) -> int:
-    """
-    与 Celery 任务保持一致的指数退避延迟计算。
-    """
-    delay = int(default_retry_delay * (1.2 ** max(0, attempt)))
-    return min(60, max(1, delay))
 
 
-def _dispatch_handle_bulk_finish(
-    bulk_id: str, url: str, root_object_count: Any | None, *, inline: bool
-):
-    """
-    根据执行模式触发 handle_bulk_finish。
-    """
-    if inline or _inline_tasks_enabled():
-        return handle_bulk_finish_inline(bulk_id, url, root_object_count)
-
-    handle_bulk_finish.apply_async(
-        args=[bulk_id, url, root_object_count], task_id=f"finish:{bulk_id}"
-    )
-    return "handle_bulk_finish dispatched"
+"""
+    Celery 入口：创建 run 并异步投递后续轮询。
+"""
+@shared_task(name="app.orchestration.product_sync_task.sync_start_full")
+def sync_start_full() -> str:
+    return _sync_start_full_logic(inline=_inline_tasks_enabled())
 
 
-def _poll_bulk_until_ready_step(
-    run_id: str | None,
-    attempt: int,
-    *,
-    inline: bool,
-    default_retry_delay: int = 60,
-) -> tuple[bool, int | None, Any]:
-    """
-    执行一次轮询逻辑，返回 (should_retry, delay_seconds, result)。
-    """
-
-    db = SessionLocal()
-
-    try:
-        if not run_id:
-            info = _shopify.current_bulk_operation() or {}
-            status = info.get("status")
-            url = info.get("url")
-            root_object_count = info.get("rootObjectCount")
-            if root_object_count is None:
-                root_object_count = info.get("objectCount")
-            op_id = info.get("id")
-
-            if status == "COMPLETED" and url:
-                result = _dispatch_handle_bulk_finish(
-                    op_id, url, root_object_count, inline=inline
-                )
-                return (False, None, result or "handled via polling(current)")
-
-            return (True, _poll_retry_delay(attempt, default_retry_delay), None)
-
-        run = db.get(ProductSyncRun, run_id)
-        if not run:
-            return (False, None, "no run")
-        if run.shopify_bulk_url:
-            return (False, None, "already has url")
-
-        if run.shopify_bulk_id:
-            info = _shopify.get_bulk_operation_by_id(run.shopify_bulk_id) or {}
-        else:
-            info = _shopify.current_bulk_operation() or {}
-
-        status = info.get("status")
-        url = info.get("url")
-        root_object_count = info.get("rootObjectCount")
-        # todo 需要兜底？
-        if root_object_count is None:
-            root_object_count = info.get("objectCount")
-        op_id = info.get("id")
-
-        run.shopify_bulk_status = status
-        db.commit()
-
-        if status in ("FAILED", "CANCELED"):
-            run.status = "failed"
-            db.commit()
-            return (False, None, f"bulk {status.lower()}")
-
-        if status == "COMPLETED" and url:
-            bulk_id = run.shopify_bulk_id or op_id
-            result = _dispatch_handle_bulk_finish(
-                bulk_id, url, root_object_count, inline=inline
-            )
-            return (False, None, result or "handled via polling")
-
-        return (True, _poll_retry_delay(attempt, default_retry_delay), None)
-
-    finally:
-        db.close()
-
+"""
+    调试入口：在当前进程同步执行完整流程。
+    poll_kwargs 将透传给 poll_bulk_until_ready_inline（例如 max_attempts / sleep）。
+"""
+def sync_start_full_inline(**poll_kwargs: Any) -> str:
+    return _sync_start_full_logic(inline=True, poll_kwargs=poll_kwargs or None)
 
 
 
@@ -194,20 +118,36 @@ def _sync_start_full_logic(*, inline: bool, poll_kwargs: Dict[str, Any] | None =
         db.close()
 
 
-@shared_task(name="app.orchestration.product_sync_task.sync_start_full")
-def sync_start_full() -> str:
-    """
-    Celery 入口：创建 run 并异步投递后续轮询。
-    """
-    return _sync_start_full_logic(inline=_inline_tasks_enabled())
 
 
-def sync_start_full_inline(**poll_kwargs: Any) -> str:
-    """
-    调试入口：在当前进程同步执行完整流程。
-    poll_kwargs 将透传给 poll_bulk_until_ready_inline（例如 max_attempts / sleep）。
-    """
-    return _sync_start_full_logic(inline=True, poll_kwargs=poll_kwargs or None)
+"""
+    调试入口：串行执行轮询流程，直到成功或超过最大尝试次数。
+"""
+def poll_bulk_until_ready_inline(
+    run_id: str | None,
+    *,
+    max_attempts: int | None = None,
+    sleep: Callable[[float], None] = time.sleep,
+    default_retry_delay: int = 60,
+) -> Any:
+    
+    attempt = 0
+    while True:
+        should_retry, delay, result = _poll_bulk_until_ready_step(
+            run_id,
+            attempt,
+            inline=True,
+            default_retry_delay=default_retry_delay,
+        )
+        if not should_retry:
+            return result
+
+        attempt += 1
+        if max_attempts is not None and attempt > max_attempts:
+            raise RuntimeError("poll_bulk_until_ready_inline exceeded max_attempts")
+
+        sleep(delay or default_retry_delay)
+
 
 
 
@@ -232,32 +172,134 @@ def poll_bulk_until_ready(self, run_id: str):
     return result
 
 
-def poll_bulk_until_ready_inline(
+
+
+"""
+   查询bulk_operation task status
+   执行一次轮询逻辑，返回 (should_retry, delay_seconds, result)。
+"""
+def _poll_bulk_until_ready_step(
     run_id: str | None,
+    attempt: int,
     *,
-    max_attempts: int | None = None,
-    sleep: Callable[[float], None] = time.sleep,
+    inline: bool,
     default_retry_delay: int = 60,
-) -> Any:
-    """
-    调试入口：串行执行轮询流程，直到成功或超过最大尝试次数。
-    """
-    attempt = 0
-    while True:
-        should_retry, delay, result = _poll_bulk_until_ready_step(
-            run_id,
-            attempt,
-            inline=True,
-            default_retry_delay=default_retry_delay,
+) -> tuple[bool, int | None, Any]:
+
+    db = SessionLocal()
+
+    try:
+        if not run_id:
+            info = _shopify.current_bulk_operation() or {}
+            status = info.get("status")
+            url = info.get("url")
+            root_object_count = info.get("rootObjectCount")
+            op_id = info.get("id")
+
+            if status == "COMPLETED" and url:
+                result = _dispatch_handle_bulk_finish(
+                    op_id, url, root_object_count, inline=inline
+                )
+                return (False, None, result or "handled via polling(current)")
+
+            return (True, _poll_retry_delay(attempt, default_retry_delay), None)
+
+
+        run = db.get(ProductSyncRun, run_id)
+        if not run:
+            return (False, None, "no run")
+        if run.shopify_bulk_url:
+            return (False, None, "already has url")
+
+        if run.shopify_bulk_id:
+            info = _shopify.get_bulk_operation_by_id(run.shopify_bulk_id) or {}
+        else:
+            info = _shopify.current_bulk_operation() or {}
+
+        status = info.get("status")
+        url = info.get("url")
+        root_object_count = info.get("rootObjectCount")
+        op_id = info.get("id")
+
+        run.shopify_bulk_status = status
+        db.commit()
+
+        if status in ("FAILED", "CANCELED"):
+            run.status = "failed"
+            db.commit()
+            return (False, None, f"bulk {status.lower()}")
+
+        if status == "COMPLETED" and url:
+            bulk_id = run.shopify_bulk_id or op_id
+            result = _dispatch_handle_bulk_finish(
+                bulk_id, url, root_object_count, inline=inline
+            )
+            return (False, None, result or "handled via polling")
+
+        return (True, _poll_retry_delay(attempt, default_retry_delay), None)
+
+    finally:
+        db.close()
+
+
+
+
+"""
+    根据执行模式触发 handle_bulk_finish。
+"""
+def _dispatch_handle_bulk_finish(
+    bulk_id: str, url: str, root_object_count: Any | None, *, inline: bool
+):
+    if inline or _inline_tasks_enabled():
+        return handle_bulk_finish_inline(bulk_id, url, root_object_count)
+
+    handle_bulk_finish.apply_async(
+        args=[bulk_id, url, root_object_count], task_id=f"finish:{bulk_id}"
+    )
+    return "handle_bulk_finish dispatched"
+
+
+
+"""
+   与 Celery 任务保持一致的指数退避延迟计算。
+"""
+def _poll_retry_delay(attempt: int, default_retry_delay: int = 60) -> int:
+    delay = int(default_retry_delay * (1.2 ** max(0, attempt)))
+    return min(60, max(1, delay))
+
+
+
+@shared_task(
+    name="app.orchestration.product_sync_task.handle_bulk_finish",
+    bind=True,
+    max_retries=5,
+    default_retry_delay=15,
+    retry_backoff=True,
+    acks_late=True,
+    retry_jitter=True,
+    autoretry_for=(Exception,),
+)
+def handle_bulk_finish(self, bulk_id: str, url: str, root_object_count: int | None = None):
+    try:
+        return _handle_bulk_finish_logic(bulk_id, url, root_object_count)
+    except SoftTimeLimitExceeded as e:
+        logger.warning(
+            "soft time limit exceeded, will retry: bulk_id=%s err=%s",
+            bulk_id,
+            e,
         )
-        if not should_retry:
-            return result
+        raise self.retry(exc=e, countdown=20)
 
-        attempt += 1
-        if max_attempts is not None and attempt > max_attempts:
-            raise RuntimeError("poll_bulk_until_ready_inline exceeded max_attempts")
 
-        sleep(delay or default_retry_delay)
+
+"""
+    调试入口：同步执行 handle_bulk_finish 逻辑。
+"""
+def handle_bulk_finish_inline(
+    bulk_id: str, url: str, root_object_count: int | None = None
+):
+    return _handle_bulk_finish_logic(bulk_id, url, root_object_count)
+
 
 
 
@@ -310,36 +352,6 @@ def _handle_bulk_finish_logic(
 
 
 
-@shared_task(
-    name="app.orchestration.product_sync_task.handle_bulk_finish",
-    bind=True,
-    max_retries=5,
-    default_retry_delay=15,
-    retry_backoff=True,
-    acks_late=True,
-    retry_jitter=True,
-    autoretry_for=(Exception,),
-)
-def handle_bulk_finish(self, bulk_id: str, url: str, root_object_count: int | None = None):
-    try:
-        return _handle_bulk_finish_logic(bulk_id, url, root_object_count)
-    except SoftTimeLimitExceeded as e:
-        logger.warning(
-            "soft time limit exceeded, will retry: bulk_id=%s err=%s",
-            bulk_id,
-            e,
-        )
-        raise self.retry(exc=e, countdown=20)
-
-
-def handle_bulk_finish_inline(
-    bulk_id: str, url: str, root_object_count: int | None = None
-):
-    """
-    调试入口：同步执行 handle_bulk_finish 逻辑。
-    """
-    return _handle_bulk_finish_logic(bulk_id, url, root_object_count)
-
 
 
 '''
@@ -370,6 +382,7 @@ def process_chunk(run_id: str, chunk_idx: int,
             db.rollback()
 
         skus, chunk_data_map = normalize_sku_payload(sku_codes)
+
         # 有些分片可能确实是空片, 把“空分片”视为成功: 没有要处理的数据 == 已经处理完
         if not skus:
             mark_chunk_succeeded(db, run_id, chunk_idx, stats={
@@ -396,7 +409,7 @@ def process_chunk(run_id: str, chunk_idx: int,
         # todo 让 get_products_by_skus_with_stats 把失败的 sku 列表（无法返回/子批失败）交出来？
         items, stats = get_products_by_skus_with_stats(skus)
 
-        # todo 增加查询dsz的新接口获取sku的运费数据 /v2/get_zone_rates（仅 sku + standard）
+        # 3) 增加查询dsz的新接口获取sku的运费数据 /v2/get_zone_rates（仅 sku + standard）
         zone_list = get_zone_rates_by_skus(skus)
         zone_map: dict[str, dict] = {}
         for z in zone_list or []:
@@ -418,16 +431,15 @@ def process_chunk(run_id: str, chunk_idx: int,
         # 3) 把 DSZ 原始结构转换成系统内部统一的数据结构 + 拼接 attrsHash + 变体映射 
         normed: list[dict] = []
         for raw in items:
-            # todo 增加对于运费数据的组装,special_end_date 和运费都拿不到？
             sku_raw = str((raw or {}).get("sku") or "").strip()  
             std = zone_map.get(sku_raw)  
             raw_for_norm = dict(raw) if isinstance(raw, dict) else {} 
             if std:  # 注入给 normalizer
                 raw_for_norm["_zone_standard"] = std
                 
+
             # dsz + shopify 归一化内部字段
             n = normalize_dsz_product(raw_for_norm)
-
 
             sku = n.get("sku_code")
             if sku:
