@@ -146,25 +146,25 @@ class DSZHttpClient:
             try:
                 resp = self._session.request(method, url, headers=headers, timeout=timeout, **kwargs)
 
-                try:
-                    # 打印 resp 的关键信息，避免过长输出（截断 body 到 1000 字符）
-                    info_msg = f"DSZ response: {method} {url} -> {resp.status_code}"
-                    # logger.debug(info_msg)
-                    # logger.debug("DSZ response headers: %s", dict(resp.headers))
-                    body_text = resp.text or ""
-                    try:
-                        parsed = resp.json()
-                        pretty = json.dumps(parsed, ensure_ascii=False, indent=2)
-                    except Exception:
-                        pretty = body_text
-                    logger.debug("DSZ response body: %s", pretty)
+                # try:
+                #     # 打印 resp 的关键信息，避免过长输出（截断 body 到 1000 字符）
+                #     info_msg = f"DSZ response: {method} {url} -> {resp.status_code}"
+                #     # logger.debug(info_msg)
+                #     # logger.debug("DSZ response headers: %s", dict(resp.headers))
+                #     body_text = resp.text or ""
+                #     try:
+                #         parsed = resp.json()
+                #         pretty = json.dumps(parsed, ensure_ascii=False, indent=2)
+                #     except Exception:
+                #         pretty = body_text
+                #     logger.debug("DSZ response body: %s", pretty)
 
-                    # Also print to stdout
-                    # print(info_msg)
-                    # print("DSZ response headers:", dict(resp.headers))
-                    # print("DSZ response body (truncated 1000 chars):", pretty)
-                except Exception:
-                    logger.exception("Failed to log DSZ response")
+                #     # Also print to stdout
+                #     # print(info_msg)
+                #     # print("DSZ response headers:", dict(resp.headers))
+                #     # print("DSZ response body (truncated 1000 chars):", pretty)
+                # except Exception:
+                #     logger.exception("Failed to log DSZ response")
 
             except requests.RequestException as e:
                 # error1: 连接/超时等异常：指数退避
@@ -219,22 +219,34 @@ class DSZHttpClient:
     限流器
       - 优先使用 Redis 令牌桶限流；不可用时退回进程内节流
     '''
-    # todo test
     def _respect_rate_limit(self) -> None:
         # --- 1-全局限流: _global_limiter is RedisTokenBucketLimiter
         limiter = getattr(self, "_global_limiter", None)  # 如果实例上有 _global_limiter 属性，就取出来
         if limiter is not None:
             try:
+                global_hit = False
+                total_global_sleep = 0.0
                 # 尝试最多 10 次抢 token ~10 * 5s = 50s（通常远小于此）
                 for _ in range(10):
                     allowed, wait_ms = limiter.acquire_once()    # wait_ms 令牌桶算法内部计算出来的
                     if allowed:  # 抢到了一个 token，可以立即发请求
+                        if global_hit:
+                            logger.info(
+                                "DSZ rate limit cleared after waiting %.3fs (global token bucket)",
+                                total_global_sleep,
+                            )
                         return
 
                     # 等待一段时间再重试
-                    time.sleep(max(0.001, (wait_ms or 1000) / 1000.0))
+                    sleep_sec = max(0.001, (wait_ms or 1000) / 1000.0)
+                    if not global_hit:
+                        logger.info("DSZ rate limit hit (global); sleeping %.3fs before retry", sleep_sec)
+                        global_hit = True
+                    total_global_sleep += sleep_sec
+                    time.sleep(sleep_sec)
 
                 time.sleep(1.0)       # 多次尝试仍未抢到，强制等待 1 秒再继续（避免过快循环）
+                logger.info("DSZ rate limit hit (global); forced extra 1.0s sleep after retries")
             except Exception as e:
                 logger.warning("Global rate-limit disabled due to Redis error: %s; falling back to process-local.", e)
                 
@@ -246,7 +258,9 @@ class DSZHttpClient:
 
         delta = now - self._last_request_ts
         if delta < interval:
-            time.sleep(interval - delta)
+            sleep_sec = interval - delta
+            logger.info("DSZ rate limit hit (local); sleeping %.3fs", sleep_sec)
+            time.sleep(sleep_sec)
 
 
     # 指数退避：上限 60 秒，加上 0~25% 抖动。例：2s, 4s, 8s, 16s, 32s, 60s

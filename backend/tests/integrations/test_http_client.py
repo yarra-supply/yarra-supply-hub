@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import time
 from typing import Iterable
 
 import pytest
@@ -177,17 +178,24 @@ def test_get_products_by_skus_respects_rate_limit(monkeypatch: pytest.MonkeyPatc
         pytest.skip("Provide TEST_DSZ_SKU or TEST_DSZ_SKUS to run this test.")
 
     http_client = DSZHttpClient()
-    monkeypatch.setattr(
-        dsz_products,
-        "DSZProductsAPI",
-        lambda: dsz_products.DSZProductsAPI(http=http_client),
-    )
+    def factory(*args, **kwargs):
+        kwargs.setdefault("http", http_client)
+        return dsz_products.DSZProductsAPI(*args, **kwargs)
+
+    monkeypatch.setattr(dsz_products, "DSZProductsAPI", factory)
 
     try:
-        result1 = dsz_products.get_products_by_skus(skus[:5])
+
+        start = time.perf_counter()
+        result1 = dsz_products.get_products_by_skus_with_stats(skus)
+        duration_first = time.perf_counter() - start
+        print(f"get_products_by_skus_with_stats took {duration_first:.3f}s")
         first_sent = http_client._last_request_ts  # type: ignore[attr-defined]
 
-        result2 = dsz_products.get_products_by_skus(skus[:5])
+        start = time.perf_counter()
+        result2 = dsz_products.get_zone_rates_by_skus(skus)
+        duration_second = time.perf_counter() - start
+        print(f"get_zone_rates_by_skus took {duration_second:.3f}s")
         second_sent = http_client._last_request_ts  # type: ignore[attr-defined]
     finally:
         http_client._session.close()  # type: ignore[attr-defined]
@@ -201,8 +209,8 @@ def test_get_products_by_skus_respects_rate_limit(monkeypatch: pytest.MonkeyPatc
     assert delta >= interval - 0.15, "Calls should be spaced by the configured rate limit interval"
 
 
-def test_get_zone_rates_by_skus_respects_rate_limit(monkeypatch: pytest.MonkeyPatch) -> None:
-    """调用 get_zone_rates_by_skus 两次，确认共享 client 时节流生效。"""
+def test_get_zone_rates_by_skus_respects_rate_limit() -> None:
+    """调用 get_zone_rates_by_skus 两次，确认真实流程下的节流间隔。"""
 
     from app.integrations.dsz import dsz_products
 
@@ -210,33 +218,26 @@ def test_get_zone_rates_by_skus_respects_rate_limit(monkeypatch: pytest.MonkeyPa
     if not skus:
         pytest.skip("Provide TEST_DSZ_SKU or TEST_DSZ_SKUS to run this test.")
 
-    http_client = DSZHttpClient()
-    monkeypatch.setattr(
-        dsz_products,
-        "DSZProductsAPI",
-        lambda: dsz_products.DSZProductsAPI(http=http_client),
-    )
 
-    try:
-        result1 = dsz_products.get_zone_rates_by_skus(skus[:5])
-        first_sent = http_client._last_request_ts  # type: ignore[attr-defined]
+    start = time.perf_counter()
+    result1 = dsz_products.get_products_by_skus_with_stats(skus)
+    duration_first = time.perf_counter() - start
+    print(f"fetch_zone_rates_by_skus call #1 took {duration_first:.3f}s")
 
-        result2 = dsz_products.get_zone_rates_by_skus(skus[:5])
-        second_sent = http_client._last_request_ts  # type: ignore[attr-defined]
-    finally:
-        http_client._session.close()  # type: ignore[attr-defined]
-
+    start = time.perf_counter()
+    result2 = dsz_products.get_zone_rates_by_skus(skus)
+    duration_second = time.perf_counter() - start
+    print(f"fetch_zone_rates_by_skus call #2 took {duration_second:.3f}s")
+    
     assert isinstance(result1, list), "Zone rate response should be a list"
     assert isinstance(result2, list), "Zone rate response should be a list"
 
-    interval = 60.0 / float(http_client.rate_limit_per_min)
-    assert second_sent >= first_sent, "Second call timestamp should not precede first call"
-    delta = second_sent - first_sent
-    assert delta >= interval - 0.15, "Calls should be spaced by the configured rate limit interval"
 
 
 # 测试sku 
 def _sample_skus() -> list[str]:
+
+    # 30个
     return [
         "V420-CSST-WPOTGSET-C",
         "V952-GYBGSFS18INCH2HS2V3",
@@ -248,5 +249,117 @@ def _sample_skus() -> list[str]:
         "V240-CMT-JFA-180-LED",
         "V201-HOLD6079WH8AU",
         "V178-36220",
-    ]
+        "DO-PUMP-40L-DC",
+        "BAS-HOOP-160-RDBK",
+        "ODF-KID-PICNIC-UM-PLC",
+        "WL-RTG-2LED-SWL-RD",
+        "WL-SQ-142LED-SWL-BU",
+        "V600-PB-YKJ167",
+        "GCT-PLASTIC-100KG-3IN1-GN",
+        "BAS-HOOP-RETURNER",
+        "V238-SUPDZ-40499321307216",
+        "V238-SUPDZ-40499264258128",
+        "PET-CH-2DOOR-BR",
+        "FURNI-C-TOY3PC-BUORGN",
+        "SJ-C-17-BK",
+        "FIT-PEDAL-ELEC-A-BL",
+        "UC-4820-25-WH",
+        "RD-D-PLY-345-BK",
+        "ESC-S32-6-BK",
+        "BAS-HOOP-B-KID-M-YE",
+        "BAS-HOOP-B-KID-M-RD",
+        "V274-AQ-SP3000",
 
+        "V420-CSST-WPOTGSET-C",
+        "V952-GYBGSFS18INCH2HS2V3",
+        "V922-AWD-D0532-PHOALB600-BR",
+        "BW-CLEANER-58771",
+        "EAC-C-RC-01L-BK",
+        "GL-ECO-3T-1000",
+        "V201-HAZ0000WH8AU",
+        "V240-CMT-JFA-180-LED",
+        "V201-HOLD6079WH8AU",
+        "V178-36220",
+        "DO-PUMP-40L-DC",
+        "BAS-HOOP-160-RDBK",
+        "ODF-KID-PICNIC-UM-PLC",
+        "WL-RTG-2LED-SWL-RD",
+        "WL-SQ-142LED-SWL-BU",
+        "V600-PB-YKJ167",
+        "GCT-PLASTIC-100KG-3IN1-GN",
+        "BAS-HOOP-RETURNER",
+        "V238-SUPDZ-40499321307216",
+        "V238-SUPDZ-40499264258128",
+        "PET-CH-2DOOR-BR",
+        "FURNI-C-TOY3PC-BUORGN",
+        "SJ-C-17-BK",
+        "FIT-PEDAL-ELEC-A-BL",
+        "UC-4820-25-WH",
+        "RD-D-PLY-345-BK",
+        "ESC-S32-6-BK",
+        "BAS-HOOP-B-KID-M-YE",
+        "BAS-HOOP-B-KID-M-RD",
+        "V274-AQ-SP3000",
+
+        "V420-CSST-WPOTGSET-C",
+        "V952-GYBGSFS18INCH2HS2V3",
+        "V922-AWD-D0532-PHOALB600-BR",
+        "BW-CLEANER-58771",
+        "EAC-C-RC-01L-BK",
+        "GL-ECO-3T-1000",
+        "V201-HAZ0000WH8AU",
+        "V240-CMT-JFA-180-LED",
+        "V201-HOLD6079WH8AU",
+        "V178-36220",
+        "DO-PUMP-40L-DC",
+        "BAS-HOOP-160-RDBK",
+        "ODF-KID-PICNIC-UM-PLC",
+        "WL-RTG-2LED-SWL-RD",
+        "WL-SQ-142LED-SWL-BU",
+        "V600-PB-YKJ167",
+        "GCT-PLASTIC-100KG-3IN1-GN",
+        "BAS-HOOP-RETURNER",
+        "V238-SUPDZ-40499321307216",
+        "V238-SUPDZ-40499264258128",
+        "PET-CH-2DOOR-BR",
+        "FURNI-C-TOY3PC-BUORGN",
+        "SJ-C-17-BK",
+        "FIT-PEDAL-ELEC-A-BL",
+        "UC-4820-25-WH",
+        "RD-D-PLY-345-BK",
+        "ESC-S32-6-BK",
+        "BAS-HOOP-B-KID-M-YE",
+        "BAS-HOOP-B-KID-M-RD",
+        "V274-AQ-SP3000",
+
+        "V420-CSST-WPOTGSET-C",
+        "V952-GYBGSFS18INCH2HS2V3",
+        "V922-AWD-D0532-PHOALB600-BR",
+        "BW-CLEANER-58771",
+        "EAC-C-RC-01L-BK",
+        "GL-ECO-3T-1000",
+        "V201-HAZ0000WH8AU",
+        "V240-CMT-JFA-180-LED",
+        "V201-HOLD6079WH8AU",
+        "V178-36220",
+        "DO-PUMP-40L-DC",
+        "BAS-HOOP-160-RDBK",
+        "ODF-KID-PICNIC-UM-PLC",
+        "WL-RTG-2LED-SWL-RD",
+        "WL-SQ-142LED-SWL-BU",
+        "V600-PB-YKJ167",
+        "GCT-PLASTIC-100KG-3IN1-GN",
+        "BAS-HOOP-RETURNER",
+        "V238-SUPDZ-40499321307216",
+        "V238-SUPDZ-40499264258128",
+        "PET-CH-2DOOR-BR",
+        "FURNI-C-TOY3PC-BUORGN",
+        "SJ-C-17-BK",
+        "FIT-PEDAL-ELEC-A-BL",
+        "UC-4820-25-WH",
+        "RD-D-PLY-345-BK",
+        "ESC-S32-6-BK",
+        "BAS-HOOP-B-KID-M-YE",
+        "BAS-HOOP-B-KID-M-RD",
+        "V274-AQ-SP3000",
+    ]

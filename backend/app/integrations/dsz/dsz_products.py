@@ -61,7 +61,7 @@ class DSZProductsAPI:
         """允许注入自定义 DSZHttpClient，便于测试或多账号使用。"""
         self.http = http or DSZHttpClient()
         self.endpoint = settings.DSZ_PRODUCTS_ENDPOINT      # 默认：/v2/products
-        self.max_per_req = settings.DSZ_PRODUCTS_MAX_PER_REQ# 默认：50
+        self.max_per_req = settings.DSZ_PRODUCTS_MAX_PER_REQ # 默认：50
         self.sku_param = settings.DSZ_PRODUCTS_SKU_PARAM    # 默认：skus
         self.payload_sku_field = settings.DSZ_PRODUCTS_SKU_FIELD  # 默认：sku    
         self.method = (settings.DSZ_PRODUCTS_METHOD or "GET").strip().upper()
@@ -106,13 +106,12 @@ class DSZProductsAPI:
                 attempt += 1
                 try:
                     payload = self._fetch_one_batch(chunk)
-
-                    try:
-                        # 使用 json.dumps 美化输出，ensure_ascii=False 保留中文，default=str 处理不可序列化对象
-                        print("DSZ payload:\n" + json.dumps(payload, ensure_ascii=False, indent=2, default=str))
-                    except Exception:
-                        print("DSZ payload (fallback):")
-                        pprint(payload)
+                    # try:
+                    #     # 使用 json.dumps 美化输出，ensure_ascii=False 保留中文，default=str 处理不可序列化对象
+                    #     print("DSZ payload:\n" + json.dumps(payload, ensure_ascii=False, indent=2, default=str))
+                    # except Exception:
+                    #     print("DSZ payload (fallback):")
+                    #     pprint(payload)
 
                     # 解析 items 列表
                     items = self._extract_items(payload)  # 严格：必须是 list[dict]  
@@ -279,8 +278,10 @@ class DSZProductsAPI:
         all_skus = [s.strip() for s in skus if s and s.strip()]
         if not all_skus:
             return []
+        
+        # 每批“实际请求大小” = min(DSZ_BATCH_SIZE, 接口硬上限)
+        per_req = settings.DSZ_PRODUCTS_MAX_PER_REQ
 
-        per_req = max(1, min(self.zone_limit, 160))
         results: List[dict] = []
         seen: set[str] = set()
 
