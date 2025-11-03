@@ -46,13 +46,11 @@ def schedule_chunks_streaming(
     buf_entries: List[Dict[str, Any]] = []  # 聚合变体信息
     sigs = []
     
-
     #====测试用 =====#
     inline_mode = _inline_tasks_enabled()
     inline_results: List[dict] = [] if inline_mode else None
     head_limit = 20
     #====测试用 =====#
-
 
     idx = 0               # 分片序号（用于确定性 task_id）
     db = SessionLocal()  
@@ -63,20 +61,26 @@ def schedule_chunks_streaming(
             nonlocal sigs, inline_results
             if not entries:
                 return
+
+            # 解析出 sku_entries 列表: sku, shopify_variant_id, shopify_price, product_tags
             sku_entries = []
             for item in entries:
                 data = item or {}
                 sku = str(data.get("sku") or "").strip()
                 if not sku:
                     continue
+
+                # 这里要取shopify url里面的原字段做转换
                 entry = {"sku": sku}
-                variant_id = data.get("variant_id")
+                variant_id = data.get("id")
                 if variant_id:
-                    entry["variant_id"] = str(variant_id)
+                    entry["shopify_variant_id"] = str(variant_id)
+
                 if "price" in data and data.get("price") is not None:
-                    entry["price"] = data.get("price")
+                    entry["shopify_price"] = data.get("price")
+
                 if "tags" in data:
-                    entry["tags"] = normalize_tags(data.get("tags"))
+                    entry["product_tags"] = normalize_tags(data.get("tags"))
                 sku_entries.append(entry)
 
             task_id = f"ps:chunk:{run_id}:{chunk_idx}"
@@ -92,14 +96,14 @@ def schedule_chunks_streaming(
                 sig = signature(process_task_name).s(run_id, chunk_idx, sku_entries, False).set(task_id=task_id)
                 sigs.append(sig)
 
-        # todo check 流式从url下载数据 增加字段
-        # test 当前只要前20数据
+        # todo check 流式从url下载数据 增加字段 test 当前只要前20数据
         source_iter = iter_variant_from_bulk_head(url, limit=head_limit)
+
         for item in source_iter:
         # for item in iter_variant_from_bulk(url):
             buf_entries.append(item)
+            # 在缓冲 entries 里已经攒够一批时才会被调用
             if len(buf_entries) >= chunk_size:
-                # 在缓冲 entries 里已经攒够一批时才会被调用
                 flush_chunk(buf_entries, idx)
                 buf_entries.clear()
                 idx += 1
@@ -109,9 +113,7 @@ def schedule_chunks_streaming(
             buf_entries.clear()
             idx += 1
 
-        # 此时 ProductSyncChunk 才会写入 
-        # todo 还需要吗？现在只是个安全收尾
-        db.commit()
+        db.commit()  # 现在只是个安全收尾
 
     finally:
         db.close()

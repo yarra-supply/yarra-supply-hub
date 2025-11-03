@@ -9,7 +9,7 @@ from requests import HTTPError, Timeout, RequestException
 from app.core.config import settings
 from app.integrations.shopify.graphql_queries import (
     BULK_PRODUCTS_BY_TAG_AND_STATUS,
-    BULK_PRODUCTS_BY_TAG_AND_STATUS_TEST_LIMIT_20,
+    # BULK_PRODUCTS_BY_TAG_AND_STATUS_TEST_LIMIT_20,
     PRODUCTS_BY_TAG_AND_STATUS,
     _LIST_WEBHOOKS,
     _CREATE_WEBHOOK,

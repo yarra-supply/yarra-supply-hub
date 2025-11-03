@@ -372,15 +372,14 @@ def process_chunk(run_id: str, chunk_idx: int,
 ):
 
     db = SessionLocal()
-
     try:
-        # 标记 manifest：running
         try:
-            mark_chunk_running(db, run_id, chunk_idx)
+            mark_chunk_running(db, run_id, chunk_idx)    # 标记 manifest：product_sync_chunks running
             db.commit()
         except Exception:
             db.rollback()
-
+        
+        # parse sku, price, variant id, product tags
         skus, chunk_data_map = normalize_sku_payload(sku_codes)
 
         # 有些分片可能确实是空片, 把“空分片”视为成功: 没有要处理的数据 == 已经处理完
@@ -401,7 +400,7 @@ def process_chunk(run_id: str, chunk_idx: int,
         old_map = load_existing_by_skus(db, skus)
         vid_map = load_variant_ids_by_skus(db, skus)
         for sku, payload in chunk_data_map.items():
-            variant_id = payload.get("variant_id")
+            variant_id = payload.get("shopify_variant_id")
             if variant_id:
                 vid_map[sku] = variant_id
 
@@ -441,6 +440,7 @@ def process_chunk(run_id: str, chunk_idx: int,
             # dsz + shopify 归一化内部字段
             n = normalize_dsz_product(raw_for_norm)
 
+            # 补充 shopify 侧的增量字段
             sku = n.get("sku_code")
             if sku:
                 enrich_shopify_snapshot(n, sku, vid_map, chunk_data_map)
@@ -618,6 +618,17 @@ def finalize_run(results, run_id: str):
                 pass
 
             db.commit()
+
+
+        # 收尾阶段做缺失 SKU 清理: 本次shopify没有，但系统里有的 SKU, 避免漏删：只删“本次 run 有请求过的 SKU
+
+
+
+
+
+
+
+
     finally:
         db.close()
 

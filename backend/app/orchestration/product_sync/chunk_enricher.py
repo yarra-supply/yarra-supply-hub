@@ -5,16 +5,18 @@ from typing import Any, Dict, Mapping
 from app.integrations.shopify.payload_utils import normalize_shopify_price
 
 
+
+"""
+    将 Shopify 侧的增量信息（variant id / price / tags）补充到标准化快照里。
+    snapshot 会就地修改。
+"""
 def enrich_shopify_snapshot(
     snapshot: Dict[str, Any],
     sku: str,
     variant_map: Mapping[str, str],
     chunk_payload: Mapping[str, Dict[str, Any]],
 ) -> None:
-    """
-    将 Shopify 侧的增量信息（variant id / price / tags）补充到标准化快照里。
-    snapshot 会就地修改。
-    """
+    
     variant_id = variant_map.get(sku)
     if variant_id:
         snapshot["shopify_variant_id"] = variant_id
@@ -24,8 +26,6 @@ def enrich_shopify_snapshot(
         return
 
     price = payload.get("shopify_price")
-    if price is None and "price" in payload:
-        price = payload.get("price")
 
     if price is not None:
         if hasattr(price, "quantize"):

@@ -50,17 +50,20 @@ def normalize_sku_payload(payload: list[Any] | None) -> Tuple[List[str], Dict[st
         tags_value: List[str] | None = None
 
         if isinstance(entry, dict):
-            sku = str(entry.get("sku") or entry.get("sku_code") or "").strip()
-            variant_id = entry.get("variant_id") or entry.get("shopify_variant_id")
-            if "price" in entry or "shopify_price" in entry:
-                raw_price = entry.get("shopify_price", entry.get("price"))
+            sku = str(entry.get("sku") or "").strip()
+            variant_id = entry.get("shopify_variant_id") or entry.get("variant_id")
+
+            if "shopify_price" in entry:
+                raw_price = entry.get("shopify_price")
                 has_price = True
-            if "tags" in entry:
+
+            tags_source = None
+            if "product_tags" in entry:
+                tags_source = entry.get("product_tags")
+
+            if tags_source is not None:
                 tags_in_payload = True
-                tags_value = normalize_tags(entry.get("tags"))
-            elif "product_tags" in entry:
-                tags_in_payload = True
-                tags_value = normalize_tags(entry.get("product_tags"))
+                tags_value = normalize_tags(tags_source)
         elif isinstance(entry, (list, tuple)):
             if entry:
                 sku = str(entry[0] or "").strip()
@@ -77,12 +80,13 @@ def normalize_sku_payload(payload: list[Any] | None) -> Tuple[List[str], Dict[st
         if variant_id:
             variant_str = str(variant_id).strip()
             if variant_str:
-                data["variant_id"] = variant_str
+                data["shopify_variant_id"] = variant_str
         if has_price:
             normalized_price = normalize_shopify_price(raw_price)
             if normalized_price is not None:
                 data["shopify_price"] = normalized_price
         if tags_in_payload:
-            data["product_tags"] = tags_value or []
+            normalized_tags: List[str] = list(tags_value or [])
+            data["product_tags"] = normalized_tags
 
     return skus, data_map

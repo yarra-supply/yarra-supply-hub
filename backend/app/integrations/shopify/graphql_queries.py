@@ -98,32 +98,32 @@ BULK_PRODUCTS_BY_TAG_AND_STATUS_TEST = BULK_PRODUCTS_BY_TAG_AND_STATUS % {
     "variants_args": "(first: 50)",
 }
 
-BULK_PRODUCTS_BY_TAG_AND_STATUS_TEST_LIMIT_20 = r"""
-{
-  products(first: 20, query: %(filter)s) {
-    edges {
-      node {
-        id
-        vendor
-        variants%(variants_args)s {
-          edges {
-            node {
-              id
-              sku
-              barcode
-              price
-              compareAtPrice
-              inventoryItem {
-                unitCost { amount currencyCode }
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-}
-""".strip()
+# BULK_PRODUCTS_BY_TAG_AND_STATUS_TEST_LIMIT_20 = r"""
+# {
+#   products(first: 20, query: %(filter)s) {
+#     edges {
+#       node {
+#         id
+#         vendor
+#         variants%(variants_args)s {
+#           edges {
+#             node {
+#               id
+#               sku
+#               barcode
+#               price
+#               compareAtPrice
+#               inventoryItem {
+#                 unitCost { amount currencyCode }
+#               }
+#             }
+#           }
+#         }
+#       }
+#     }
+#   }
+# }
+# """.strip()
 
 
 # 使用时提供：{"products_first": int, "variants_args": "(first: X)" 或 "", "filter": json.dumps(search)}
