@@ -448,8 +448,8 @@ def process_chunk(run_id: str, chunk_idx: int,
             # 计算属性哈希 —— 只使用 FREIGHT_HASH_FIELDS 中的入参字段
             # 这是“运费敏感字段哈希”的唯一落库点：存入 SkuInfo.attrs_hash_current
             n["attrs_hash_current"] = calc_attrs_hash_current(n)
-            if sku:
-                print(f"product candidate sku={sku} length={n.get('length')!r} width={n.get('width')!r} height={n.get('height')!r}")
+            # if sku:
+            #     print(f"product candidate sku={sku} length={n.get('length')!r} width={n.get('width')!r} height={n.get('height')!r}")
             normed.append(n)
 
 

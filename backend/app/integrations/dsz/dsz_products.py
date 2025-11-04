@@ -115,7 +115,8 @@ class DSZProductsAPI:
 
                     # 解析 items 列表
                     items = self._extract_items(payload)  # 严格：必须是 list[dict]  
-                    
+                    print(f"DSZ payload items size={len(items)}")  
+
                     break  # 成功
                 except Exception as e:
                     if attempt >= per_batch_attempts:
@@ -280,7 +281,7 @@ class DSZProductsAPI:
             return []
         
         # 每批“实际请求大小” = min(DSZ_BATCH_SIZE, 接口硬上限)
-        per_req = settings.DSZ_PRODUCTS_MAX_PER_REQ
+        per_req = settings.DSZ_ZONE_RATES_LIMIT
 
         results: List[dict] = []
         seen: set[str] = set()
@@ -288,8 +289,19 @@ class DSZProductsAPI:
         for chunk in _chunked(all_skus, per_req):
             body = {"skus": ",".join(chunk), "page_no": 1, "limit": per_req}
             payload = self.http.post_json(self.zone_endpoint, json_body=body)
+
             # 解析 items
             items = self._extract_zone_rates_items(payload)
+            print(f"DSZ zone_rates items size={len(items)}")
+
+            returned = {str((it or {}).get("sku") or "").strip() for it in items if isinstance(it, dict)}
+            returned.discard("")
+            if len(returned) < len(chunk):
+                missing = [sku for sku in chunk if sku not in returned]
+                logger.warning(
+                    "DSZ zone_rates mismatch: requested=%d returned=%d missing=%d sample_missing=%s",
+                    len(chunk), len(returned), len(missing), missing[:5],
+                )
 
             for it in items:
                 sku = (it.get("sku") or "").strip()

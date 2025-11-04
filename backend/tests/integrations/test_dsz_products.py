@@ -87,6 +87,7 @@
 #     print(json.dumps(products, ensure_ascii=False, indent=2))
 
 
+
 # # 对统计字段做核对，确保 return_stats=True 时请求/响应数量匹配
 # def test_fetch_by_skus_with_stats_counts_match(
 #     dsz_products_api: DSZProductsAPI, sample_skus: List[str]

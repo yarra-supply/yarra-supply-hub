@@ -46,7 +46,7 @@ TEST_SKUS: set[str] = {
     "V274-AQ-SP3000",
 }
 
-SYNC_CHUNK_SKUS: int = getattr(settings, "SYNC_CHUNK_SKUS", 4000)  # 默认 5k/片
+SYNC_CHUNK_SKUS: int = getattr(settings, "SYNC_CHUNK_SKUS", 5000)  # 默认 5k/片
 CHORD_SPLIT_AT: int = getattr(settings, "chord_split_at", 200)     # 单个 chord 的最大 header 数量，超出则分层
 
 

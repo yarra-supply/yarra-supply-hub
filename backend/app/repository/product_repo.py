@@ -46,6 +46,8 @@ SYNC_FIELDS = [
     # "freight_by_zone",              # 若表里没有该列，后续 upsert 会忽略传值
 ]
 
+SKU_INFO_UPSERT_BATCH_SIZE = 500
+
 
 # 前端表格用到的主要字段（与 /products 返回一致
 _PRODUCT_EXPORT_COLUMNS = [
@@ -289,15 +291,11 @@ def diff_snapshot(old: dict|None, new: dict) -> dict:
 """
 def bulk_upsert_sku_info(db, rows: list[dict], *, only_update_when_changed: bool=False) -> None:
     # 传入的 rows 建议本身就是“只包含变更”的子集（上游已筛过），此处再加一层 where(changed) 保险。
-    if not rows: 
+    if not rows:
         return
-    
-    # todo 当前单条更新了
+
+    # 预检：确认不存在 SQLAlchemy BindParameter 之类的延迟绑定值
     for idx, row in enumerate(rows):
-        if "length" in row:
-            print(
-                "[bulk_upsert_sku_info] row", idx, "length", row["length"], "type", type(row["length"])
-            )
         for key, value in row.items():
             if isinstance(value, BindParameter):
                 print(
@@ -311,10 +309,15 @@ def bulk_upsert_sku_info(db, rows: list[dict], *, only_update_when_changed: bool
                 raise ValueError(
                     f"row {idx} field {key} is BindParameter; provide plain Python value"
                 )
-        stmt = insert(SkuInfo).values(row)
+
+    batch_size = max(1, SKU_INFO_UPSERT_BATCH_SIZE)
+
+    for offset in range(0, len(rows), batch_size):
+        batch = rows[offset : offset + batch_size]
+        stmt = insert(SkuInfo).values(batch)
 
         excluded_tuple = tuple_(*[getattr(stmt.excluded, c) for c in SYNC_FIELDS])
-        current_tuple  = tuple_(*[getattr(SkuInfo, c) for c in SYNC_FIELDS])
+        current_tuple = tuple_(*[getattr(SkuInfo, c) for c in SYNC_FIELDS])
         changed = current_tuple.is_distinct_from(excluded_tuple)
 
         updates = {c: getattr(stmt.excluded, c) for c in SYNC_FIELDS}
@@ -327,54 +330,20 @@ def bulk_upsert_sku_info(db, rows: list[dict], *, only_update_when_changed: bool
                 where=changed,
             )
         else:
-            updates.update({
-                "updated_at": func.now(),
-                "last_changed_at": case((changed, func.now()), else_=SkuInfo.last_changed_at),
-            })
+            updates.update(
+                {
+                    "updated_at": func.now(),
+                    "last_changed_at": case((changed, func.now()), else_=SkuInfo.last_changed_at),
+                }
+            )
             stmt = stmt.on_conflict_do_update(
                 index_elements=[SkuInfo.sku_code],
-                set_=updates
+                set_=updates,
             )
 
         db.execute(stmt)
 
 
-
-
-def _to_jsonable(value):
-    """
-    递归把任意 Python 值转换为 JSON 可序列化的原生类型：
-    - Decimal -> float（NaN/Inf -> None）
-    - date/datetime -> ISO 字符串
-    - uuid.UUID -> 字符串
-    - tuple/set/list -> list
-    - dict -> dict（键统一转 str）
-    其它（str/int/float/bool/None）原样返回；非法 float（NaN/Inf）转 None
-    """
-    if isinstance(value, Decimal):
-        f = float(value)
-        if math.isnan(f) or math.isinf(f):
-            return None
-        return f
-
-    if isinstance(value, (datetime, date)):
-        return value.isoformat()
-
-    if isinstance(value, uuid.UUID):
-        return str(value)
-
-    if isinstance(value, dict):
-        return {str(k): _to_jsonable(v) for k, v in value.items()}
-
-    if isinstance(value, (list, tuple, set)):
-        return [_to_jsonable(v) for v in value]
-
-    if isinstance(value, float):
-        if math.isnan(value) or math.isinf(value):
-            return None
-        return value
-
-    return value
 
 
 
@@ -427,7 +396,7 @@ def save_candidates(db: Session, run_id: str, tuples: list[tuple[str, dict]]) ->
             continue
 
         snapshot = _to_jsonable(new_s)
-        print("[save_candidates] sku", sku, "snapshot", snapshot)
+        # print("[save_candidates] sku", sku, "snapshot", snapshot)
         
         rows.append({
             "run_id": run_id,
@@ -439,6 +408,10 @@ def save_candidates(db: Session, run_id: str, tuples: list[tuple[str, dict]]) ->
 
     if not rows:
         return 0
+    
+    # debug: print/log the size of rows being upserted
+    logger.info("[save_candidates] candidate rows size: %d", len(rows))
+    print(f"[save_candidates] candidate rows size: {len(rows)}")
 
     stmt = insert(ProductSyncCandidate).values(rows)   # 一次写入
 
@@ -455,6 +428,47 @@ def save_candidates(db: Session, run_id: str, tuples: list[tuple[str, dict]]) ->
 
     res = db.execute(upsert_stmt)
     return res.rowcount or 0
+
+
+
+
+
+def _to_jsonable(value):
+    """
+    递归把任意 Python 值转换为 JSON 可序列化的原生类型：
+    - Decimal -> float（NaN/Inf -> None）
+    - date/datetime -> ISO 字符串
+    - uuid.UUID -> 字符串
+    - tuple/set/list -> list
+    - dict -> dict（键统一转 str）
+    其它（str/int/float/bool/None）原样返回；非法 float（NaN/Inf）转 None
+    """
+    if isinstance(value, Decimal):
+        f = float(value)
+        if math.isnan(f) or math.isinf(f):
+            return None
+        return f
+
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+
+    if isinstance(value, uuid.UUID):
+        return str(value)
+
+    if isinstance(value, dict):
+        return {str(k): _to_jsonable(v) for k, v in value.items()}
+
+    if isinstance(value, (list, tuple, set)):
+        return [_to_jsonable(v) for v in value]
+
+    if isinstance(value, float):
+        if math.isnan(value) or math.isinf(value):
+            return None
+        return value
+
+    return value
+
+
 
 
 
