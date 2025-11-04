@@ -39,6 +39,18 @@ def _avg(values: list[Decimal]) -> Optional[Decimal]:
     return sum(vals) / Decimal(len(vals))
 
 
+_Q_CENTS = Decimal("0.01")
+_Q_THOUSAND = Decimal("0.001")
+_Q_RATIO = Decimal("0.0001")
+
+
+# 量化函数：按不同精度量化 为了和DB保持一致
+def _quantize(val: Optional[Decimal], quantum: Decimal) -> Optional[Decimal]:
+    if val is None:
+        return None
+    return val.quantize(quantum, rounding=ROUND_HALF_UP)
+
+
 def _cfgD(cfg: Optional[Mapping[str, any]], key: str, default: float | int | str) -> Decimal:
     """读取 cfg[key] 并转 Decimal；为空则用 default。"""
     if cfg is None:
@@ -75,7 +87,7 @@ class FreightInputs:
     weight: Optional[float] = None
     cbm: Optional[float] = None
     # 幂等字段
-    # attrs_hash_current: Optional[str] = None
+    attrs_hash_current: Optional[str] = None
 
     # 各州运费（17 个字段 + remote + nz）
     act: Optional[float] = None
@@ -577,24 +589,43 @@ def compute_all(i: FreightInputs,
         price_ratio_val if isinstance(price_ratio_val, Decimal) else _d(price_ratio_val)
     )
 
+
+    adjust_q = _quantize(adjust, _Q_CENTS)
+    same_shipping_q = _quantize(same_shipping, _Q_CENTS)
+    shipping_ave_q = _quantize(shipping_ave, _Q_CENTS)
+    shipping_ave_m_q = _quantize(shipping_ave_m, _Q_CENTS)
+    shipping_ave_r_q = _quantize(shipping_ave_r, _Q_CENTS)
+    shipping_med_q = _quantize(shipping_med, _Q_CENTS)
+    rural_ave_q = _quantize(rural_ave, _Q_CENTS)
+    weighted_ave_s_q = _quantize(weighted_ave_s, _Q_CENTS)
+    shipping_med_dif_q = _quantize(shipping_med_dif, _Q_CENTS)
+    cubic_weight_q = _quantize(cubic_weight, _Q_THOUSAND)
+    weight_q = _quantize(weight, _Q_CENTS)
+    price_ratio_q = _quantize(price_ratio, _Q_RATIO)
+    selling_price_q = _quantize(selling_price, _Q_CENTS)
+    shopify_price_q = _quantize(shopify_price, _Q_CENTS)
+    kogan_au_price_q = _quantize(kogan_au_price, _Q_CENTS)
+    kogan_k1_price_q = _quantize(kogan_k1_price, _Q_CENTS)
+    kogan_nz_price_q = _quantize(kogan_nz_price, _Q_CENTS)
+
     return FreightOutputs(
-        adjust=adjust,
-        same_shipping=same_shipping,
-        shipping_ave=shipping_ave,
-        shipping_ave_m=shipping_ave_m,
-        shipping_ave_r=shipping_ave_r,
-        shipping_med=shipping_med,
+        adjust=adjust_q,
+        same_shipping=same_shipping_q,
+        shipping_ave=shipping_ave_q,
+        shipping_ave_m=shipping_ave_m_q,
+        shipping_ave_r=shipping_ave_r_q,
+        shipping_med=shipping_med_q,
         remote_check=remote_check,
-        rural_ave=rural_ave,
-        weighted_ave_s=weighted_ave_s,
-        shipping_med_dif=shipping_med_dif,
-        cubic_weight=cubic_weight,
+        rural_ave=rural_ave_q,
+        weighted_ave_s=weighted_ave_s_q,
+        shipping_med_dif=shipping_med_dif_q,
+        cubic_weight=cubic_weight_q,
         shipping_type=shipping_type,
-        weight=weight,       # ← 新增字段返回
-        price_ratio=price_ratio,
-        selling_price=selling_price,
-        shopify_price=shopify_price,
-        kogan_au_price=kogan_au_price,
-        kogan_k1_price=kogan_k1_price,
-        kogan_nz_price=kogan_nz_price,
+        weight=weight_q,       # ← 新增字段返回
+        price_ratio=price_ratio_q,
+        selling_price=selling_price_q,
+        shopify_price=shopify_price_q,
+        kogan_au_price=kogan_au_price_q,
+        kogan_k1_price=kogan_k1_price_q,
+        kogan_nz_price=kogan_nz_price_q,
     )

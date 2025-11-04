@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 
 from app.services.freight.freight_compute import FreightInputs, FreightOutputs, compute_all
+import json
 
 from app.repository.freight_repo import (
     load_inputs_for_skus,            # -> List[tuple[str, FreightInputs]]
@@ -122,6 +123,7 @@ def process_batch_compute_and_persist(
         row = _map_outputs_to_row(sku, out, attrs_hash_current)
 
         changed_fields = _RESULT_COLS[:] if old is None else _diff_result(old, row)
+        # print(f"CHANGED_FIELDS (sku={sku}): {changed_fields}")
 
         if changed_fields:
             #  Kogan 导出标记 

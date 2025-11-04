@@ -23,6 +23,29 @@ def _inline_tasks_enabled() -> bool:
     return True
     # return bool(getattr(settings, "SYNC_TASKS_INLINE", True))
 
+TEST_SKUS: set[str] = {
+    "DO-PUMP-40L-DC",
+    "BAS-HOOP-160-RDBK",
+    "ODF-KID-PICNIC-UM-PLC",
+    "WL-RTG-2LED-SWL-RD",
+    "WL-SQ-142LED-SWL-BU",
+    "V600-PB-YKJ167",
+    "GCT-PLASTIC-100KG-3IN1-GN",
+    "BAS-HOOP-RETURNER",
+    "V238-SUPDZ-40499321307216",
+    "V238-SUPDZ-40499264258128",
+    "PET-CH-2DOOR-BR",
+    "FURNI-C-TOY3PC-BUORGN",
+    "SJ-C-17-BK",
+    "FIT-PEDAL-ELEC-A-BL",
+    "UC-4820-25-WH",
+    "RD-D-PLY-345-BK",
+    "ESC-S32-6-BK",
+    "BAS-HOOP-B-KID-M-YE",
+    "BAS-HOOP-B-KID-M-RD",
+    "V274-AQ-SP3000",
+}
+
 SYNC_CHUNK_SKUS: int = getattr(settings, "SYNC_CHUNK_SKUS", 4000)  # 默认 5k/片
 CHORD_SPLIT_AT: int = getattr(settings, "chord_split_at", 200)     # 单个 chord 的最大 header 数量，超出则分层
 
@@ -49,7 +72,6 @@ def schedule_chunks_streaming(
     #====测试用 =====#
     inline_mode = _inline_tasks_enabled()
     inline_results: List[dict] = [] if inline_mode else None
-    head_limit = 20
     #====测试用 =====#
 
     idx = 0               # 分片序号（用于确定性 task_id）
@@ -72,7 +94,8 @@ def schedule_chunks_streaming(
 
                 # 这里要取shopify url里面的原字段做转换
                 entry = {"sku": sku}
-                variant_id = data.get("id")
+                # iter_variant_from_bulk 返回的字段叫 variant_id
+                variant_id = data.get("variant_id") or data.get("id")
                 if variant_id:
                     entry["shopify_variant_id"] = str(variant_id)
 
@@ -96,8 +119,9 @@ def schedule_chunks_streaming(
                 sig = signature(process_task_name).s(run_id, chunk_idx, sku_entries, False).set(task_id=task_id)
                 sigs.append(sig)
 
-        # todo check 流式从url下载数据 增加字段 test 当前只要前20数据
-        source_iter = iter_variant_from_bulk_head(url, limit=head_limit)
+        # 测试阶段：仅同步 TEST_SKUS 中的变体
+        # source_iter = iter_variant_from_bulk_head(url, target_skus=TEST_SKUS)
+        source_iter = iter_variant_from_bulk(url)
 
         for item in source_iter:
         # for item in iter_variant_from_bulk(url):
@@ -246,22 +270,32 @@ def iter_variant_from_bulk(url: str) -> Iterator[Dict[str, Any]]:
 
 
 
-def iter_variant_from_bulk_head(url: str, limit: Optional[int] = None) -> Iterator[Dict[str, Any]]:
+def iter_variant_from_bulk_head(
+    url: str,
+    target_skus: Optional[Iterable[str]] = None,
+) -> Iterator[Dict[str, Any]]:
     """
-    读取 JSONL 的前 limit 条记录；limit 为空则回退到完整结果。
+    遍历 bulk JSONL 数据；当提供 target_skus 时，仅返回匹配 SKU 的变体。
+    未指定 target_skus 时等价于 iter_variant_from_bulk。
     """
-    if limit is None:
-        yield from iter_variant_from_bulk(url)
-        return
-    remaining = max(0, int(limit))
-    if remaining == 0:
-        return
+    target_set: set[str] | None = None
+    if target_skus:
+        target_set = {str(sku).strip() for sku in target_skus if sku}
+        if not target_set:
+            target_set = None
+
     gen = iter_variant_from_bulk(url)
     try:
-        for idx, pair in enumerate(gen):
-            if idx >= remaining:
-                break
-            yield pair
+        if target_set:
+            for pair in gen:
+                sku = (pair.get("sku") or "").strip()
+                if not sku:
+                    continue
+                if sku in target_set:
+                    yield pair
+        else:
+            for pair in gen:
+                yield pair
     finally:
         try:
             gen.close()

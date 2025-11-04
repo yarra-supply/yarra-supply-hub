@@ -363,7 +363,6 @@ def _handle_bulk_finish_logic(
 # 当前状态：用的是 Celery chord。如果任何一个分片任务抛异常，
 # 默认 chord 的回调（finalize_run）不会被触发，整趟 run 会一直卡在 running。
 # 也就是说——你现在没有“自动跳过”的能力
-
 @shared_task(
     name="app.orchestration.product_sync.product_sync_task.process_chunk",
     # soft_time_limit=600,
