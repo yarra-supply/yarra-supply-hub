@@ -2,9 +2,13 @@
 # 运费计算结果相关的 DB 操作
 
 from __future__ import annotations
-from datetime import datetime
+from datetime import datetime, date
+from decimal import Decimal
 from typing import List, Dict, Optional, Tuple, Any
-from sqlalchemy import select, text
+import json
+
+import sqlalchemy as sa
+from sqlalchemy import select, text, Numeric, Boolean, DateTime as SA_DateTime, Integer, Float
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
@@ -307,41 +311,147 @@ def load_fee_rows_by_skus(db: Session, skus: List[str]) -> Dict[str, dict]:
     return {r["sku_code"]: dict(r) for r in rows}
 
 
+
+
 """
-仅更新发生变化的列
-    changed: [ (sku_code, { column->new_value, ... }), ... ]
-    仅把 dict 里出现的列做 SET；同时统一 SET kogan_dirty=true, last_changed_at=now()
-"""
+    列级批量“upsert”：
+      - 对于每个 (sku, fields)，只更新出现于 fields 的列；
+      - 表里不存在该 sku 时自动 INSERT；
+      - 存在时 DO UPDATE，未传的列用 COALESCE 保持原值不变；
+      - 实际有列值变化时才刷新 last_changed_at。
+    返回受影响的（INSERT+UPDATE）行数近似值（PostgreSQL 的 rowcount 统计策略下）。
+
+    参数示例：
+      changed = [
+        ("SKU-001", {"kogan_au_price": Decimal("99.90"), "shipping_type": "Kogan"}),
+        ("SKU-002", {"weight": Decimal("2.3")}),
+      ]
+    """
 def update_changed_prices(
     db: Session,
-    changed: list[tuple[str, dict]],
+    changed: List[Tuple[str, Dict[str, Any]]],
     *,
     source: str,
-    run_id: int | None,
-) -> None:
+    run_id: str | None,
+) -> int:
     
     if not changed:
-        return
-    
-    # todo 都是by sku 单个更新，可以改成批量？
-    # cols: [old, new]
-    for sku_code, cols in changed:
-        sets, params = [], {"sku": sku_code, "src": source, "rid": run_id}
-        for k, v in cols.items():
-            sets.append(f"{k} = :{k}")
-            params[k] = v
+        return 0
 
-        # 统一增加脏标记与时间
-        sets.extend([
-            "kogan_dirty_au = TRUE",
-            "kogan_dirty_nz = TRUE",
-            "last_changed_at = NOW()",
-            "last_changed_source = :src",
-            "last_changed_run_id = :rid",
-        ])
+    # 1) 收集本批出现的列（仅表中真实存在的列）
+    model_cols: set[str] = set(SkuFreightFee.__table__.columns.keys())
+    # 不允许外部直接覆盖的元数据列（下面统一在 set_ 中维护）
+    meta_cols = {
+        "id", "sku_code", "updated_at",
+        "last_changed_at", "last_changed_source", "last_changed_run_id",
+        # "kogan_dirty_au", "kogan_dirty_nz",
+        # 视你的模型情况追加其它不希望被直接覆盖的列
+    }
 
-        sql = text(f"UPDATE kogan_sku_freight_fee SET {', '.join(sets)} WHERE sku_code = :sku")
-        db.execute(sql, params)
+    data_cols: set[str] = set()
+    for _, fields in changed:
+        if not fields:
+            continue
+        for k in fields.keys():
+            if k in model_cols and k not in meta_cols:
+                data_cols.add(k)
+
+    # 若本批没有任何可更新的业务列，也要保证能写入/插入占位并打上元数据
+    # ON CONFLICT SET 中将只包含 meta 的更新
+    all_rows: List[Dict[str, Any]] = []
+
+    # 2) 构造 INSERT 的行：未出现的列统一给 None
+    #    这样在 ON CONFLICT DO UPDATE 时，COALESCE(EXCLUDED.col, table.col) 可保持老值
+    for sku, fields in changed:
+        row: Dict[str, Any] = {"sku_code": sku}
+
+        # 只把允许更新的业务列放入行中；没出现的字段不设置（等价于 None）
+        for c in data_cols:
+            row[c] = fields.get(c, None)
+
+        # 统一的元数据（INSERT 时生效；UPDATE 时在 set_ 里控制）
+        row["kogan_dirty_au"] = True
+        row["kogan_dirty_nz"] = True
+        row["last_changed_source"] = source
+        row["last_changed_run_id"] = run_id
+        row["last_changed_at"] = sa.func.now()
+        row["updated_at"] = sa.func.now()
+
+        all_rows.append(row)
+
+    # 3) 生成 upsert 语句
+    stmt = insert(SkuFreightFee).values(all_rows)
+
+    # 对业务列使用 COALESCE(EXCLUDED.col, table.col) 实现“只更新传入的列”
+    set_updates: Dict[str, Any] = {}
+    excluded = stmt.excluded
+    table = SkuFreightFee.__table__.c
+
+    for c in sorted(data_cols):
+        set_updates[c] = sa.func.coalesce(getattr(excluded, c), getattr(table, c))
+
+    # 计算“是否真的有变化”（只看本批传入的列且值非 NULL）
+    # changed_pred = OR( EXCLUDED.c IS NOT NULL AND EXCLUDED.c IS DISTINCT FROM table.c, ... )
+    changed_terms = [
+        sa.and_(
+            getattr(excluded, c).isnot(None),
+            getattr(excluded, c).is_distinct_from(getattr(table, c)),
+        )
+        for c in data_cols
+    ]
+    if changed_terms:
+        changed_pred = sa.or_(*changed_terms)
+    else:
+        # 没有业务列，也不刷新 last_changed_at（但依旧会更新 source/run_id/dirty）
+        changed_pred = sa.literal(False)
+
+    # 统一的元数据：只在“真的变化”时刷新 last_changed_at，其它元数据每次写入/更新
+    set_updates.update(
+        {
+            "kogan_dirty_au": True,
+            "kogan_dirty_nz": True,
+            "last_changed_source": source,
+            "last_changed_run_id": run_id,
+            "updated_at": sa.func.now(),
+            "last_changed_at": sa.case(
+                (changed_pred, sa.func.now()),
+                else_=SkuFreightFee.last_changed_at,
+            ),
+        }
+    )
+
+    upsert_stmt = stmt.on_conflict_do_update(
+        index_elements=[SkuFreightFee.sku_code],
+        set_=set_updates,
+    )
+
+    res = db.execute(upsert_stmt)
+    # 注意：PG 的 rowcount 对 upsert 行为的统计可能不是严格“变更行数”，但足够用于观测
+    return int(res.rowcount or 0)
+
+
+
+
+def _json_default(value):
+    if isinstance(value, Decimal):
+        return str(value)
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    return value
+
+
+def _column_cast(sa_type) -> str:
+    if isinstance(sa_type, Numeric):
+        return "::numeric"
+    if isinstance(sa_type, Integer):
+        return "::integer"
+    if isinstance(sa_type, Float):
+        return "::double precision"
+    if isinstance(sa_type, Boolean):
+        return "::boolean"
+    if isinstance(sa_type, SA_DateTime):
+        return "::timestamptz"
+    return ""
 
 
 

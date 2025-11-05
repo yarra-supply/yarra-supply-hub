@@ -52,6 +52,7 @@ _OUTPUT_FIELDS = (
 )
 _TARGET_COLS = tuple(name for name, _ in _OUTPUT_FIELDS)
 
+
 # 简单且足够的“本次运行”ID（本地时区 epoch-ms）
 def _gen_run_id() -> int:
     return int(datetime.now(_CELERY_TZ).timestamp() * 1000)
