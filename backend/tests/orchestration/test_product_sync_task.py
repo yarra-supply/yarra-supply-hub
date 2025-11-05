@@ -45,8 +45,8 @@ def test_handle_bulk_finish_inline_integration(monkeypatch):
     # if not os.getenv("RUN_LIVE_PRODUCT_SYNC_TEST"):
     #     pytest.skip("set RUN_LIVE_PRODUCT_SYNC_TEST=1 to enable live product sync test")
 
-    monkeypatch.setattr(product_sync_task.settings, "SYNC_TASKS_INLINE", True, raising=False)
-    monkeypatch.setattr(product_sync_task.settings, "SYNC_BULK_PREVIEW_LIMIT", 20, raising=False)
+    # monkeypatch.setattr(product_sync_task.settings, "SYNC_TASKS_INLINE", True, raising=False)
+    # monkeypatch.setattr(product_sync_task.settings, "SYNC_BULK_PREVIEW_LIMIT", 20, raising=False)
 
     # client = ShopifyClient()
     # tag = getattr(settings, "SHOPIFY_TAG_FULL_SYNC", "DropshipzoneAU")
@@ -67,12 +67,12 @@ def test_handle_bulk_finish_inline_integration(monkeypatch):
     # if detail.get("status") != "COMPLETED" or not detail.get("url"):
     #     pytest.fail(f"Bulk operation did not succeed: {detail}")
 
-    bulk_url = "https://storage.googleapis.com/shopify-tiers-assets-prod-us-east1/bulk-operation-outputs/18a8jn5zue6pzx536jtucj1dwxua-final?GoogleAccessId=assets-us-prod%40shopify-tiers.iam.gserviceaccount.com&Expires=1762082840&Signature=XqQUMyeW%2FueANNxk5cmK0C9lPZEPLoRUncVbzI4qXv6HZYWYBluV%2FRnovP9zrly52GTAl7PGOycvlQa1aMSynETk18NOZlQ75C4nE6xUiTtoRzhY8t5ej3EMmmuNxefebthjgAPEcTduXrFXfngonEjq8GBnL2uucngiJIvfjmhN3NUbs4w0ppAV9NRlRtEVv3aoV75cg6Jo3z4Dh2yllYbq8SZOnmV65%2BuwjUmxhfrUkW3lvfsAxQRxrU8KCcAc3E71YUY3GMvHyh8IhouLegd%2BfdWX9iGLFE63JtfCp%2F1BrxbbolPi6IVwwFdgpfhHDlLNSzo3guVxc%2Fzit6dn8Q%3D%3D&response-content-disposition=attachment%3B+filename%3D%22bulk-5300245528658.jsonl%22%3B+filename%2A%3DUTF-8%27%27bulk-5300245528658.jsonl&response-content-type=application%2Fjsonl"
+    bulk_url = "https://storage.googleapis.com/shopify-tiers-assets-prod-us-east1/bulk-operation-outputs/errpjg2jhp3mf0kqxnfhqpqpervq-final?GoogleAccessId=assets-us-prod%40shopify-tiers.iam.gserviceaccount.com&Expires=1762944882&Signature=a4SDxJdyYabH0udF0rCcR9UwdW6cRyedQPkEaFXQwK8NuCZNbCrS90QvaNTKzziE%2FiN3iA7VytrOQAMQrD1gNvBDY1rexV%2BQA8ssR0%2FODq0%2BnhMq6AH77tKMo6Akvhl4tPd1rQVteLqQYx9wNZoDdWlKFmsjRe4tplQW4laUT19ClC8zWUJePK8bruswek1vYkbh%2B%2FRalBUfLfWkTN23ujFRNiItTBLrFlRZZQdm97msEiPDpAfZvaAx5wPiPo9f0MSvNd2jTlienXD6AuRe8NrF6Ui5EspSKI%2FCSQnTRLnho8nKibl%2B2C8chksHmE%2BX9KoPgo3ndf4yUqOXcMWnRQ%3D%3D&response-content-disposition=attachment%3B+filename%3D%22bulk-5339960672338.jsonl%22%3B+filename%2A%3DUTF-8%27%27bulk-5339960672338.jsonl&response-content-type=application%2Fjsonl"
     
     result = product_sync_task.handle_bulk_finish_inline(
-        "gid://shopify/BulkOperation/5300245528658",
+        "gid://shopify/BulkOperation/5339960672338",
         bulk_url,
-        99802,
+        49855,
     )
 
     run_id = (result or {}).get("run_id")

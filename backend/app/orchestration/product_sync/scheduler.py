@@ -2,8 +2,10 @@
 from __future__ import annotations
 import json
 import logging
+import time
 from typing import Iterable, Iterator, List, Dict, Any, Optional
 import requests
+from requests.exceptions import ChunkedEncodingError, ConnectionError as RequestsConnectionError, ReadTimeout
 
 from sqlalchemy import func  # 用于 upsert 时的时间戳（如果仍在本文件用）
 from celery import chord, group, shared_task
@@ -219,54 +221,94 @@ def schedule_chunks_streaming(
 """
 # 每行都会判定 __typename 或 id 是否包含 /ProductVariant/。只有确认是变体行才 yield (sku, variant_id)。
 # Product 行、其它类型的节点会被跳过，所以我们处理的粒度就是“变体”
-def iter_variant_from_bulk(url: str) -> Iterator[Dict[str, Any]]:
-    product_tags: Dict[str, List[str]] = {}
+def iter_variant_from_bulk(url: str, *, max_attempts: Optional[int] = None, retry_backoff: float = 2.0) -> Iterator[Dict[str, Any]]:
+    """
+    流式读取 Shopify Bulk JSONL，遇到 ChunkedEncodingError/网络抖动时自动重连。
+    通过“重新请求并跳过已产出的变体行”保证外部调用者不会收到重复数据。
+    """
+    max_attempts = max_attempts or int(getattr(settings, "SHOPIFY_BULK_STREAM_MAX_RETRIES", 3))
+    emitted_variants = 0  # 已成功 yield 的变体条数，用于重连时跳过重复
 
-    # 建立 HTTP 流式请求
-    with requests.get(url, stream=True, timeout=(10, 300), headers={"Accept-Encoding": "gzip, deflate"}) as r:
-        r.raise_for_status()
+    attempt = 0
+    while attempt < max_attempts:
+        product_tags: Dict[str, List[str]] = {}
+        seen_variants = 0
+        try:
+            with requests.get(
+                url,
+                stream=True,
+                timeout=(10, 300),
+                headers={"Accept-Encoding": "gzip, deflate"},
+            ) as r:
+                r.raise_for_status()
 
-        # 逐行读取 JSONL
-        for line in r.iter_lines(decode_unicode=True):
-            if not line:
-                continue
-            try:
-                row = json.loads(line)  # 将每行字符串解析成 JSON 对象
-            except Exception:
-                continue  # 行级 try/except，坏行直接跳过，不让整个任务失败
+                for line in r.iter_lines(decode_unicode=True):
+                    if not line:
+                        continue
+                    try:
+                        row = json.loads(line)
+                    except Exception:
+                        continue
 
-            node_id = row.get("id")
-            typename = row.get("__typename")
-            is_product = (typename == "Product") or (isinstance(node_id, str) and "/Product/" in node_id)
-            if is_product and isinstance(node_id, str):
-                product_tags[node_id] = normalize_tags(row.get("tags"))
-                continue
+                    node_id = row.get("id")
+                    typename = row.get("__typename")
+                    is_product = (typename == "Product") or (isinstance(node_id, str) and "/Product/" in node_id)
+                    if is_product and isinstance(node_id, str):
+                        product_tags[node_id] = normalize_tags(row.get("tags"))
+                        continue
 
-            is_variant = (typename == "ProductVariant") or (isinstance(node_id, str) and "/ProductVariant/" in node_id)
-            # 由于 iter_variant_from_bulk 跳过 Product 行，所以缓冲里不会混入“非变体”的条目。
-            # 每个 (sku, variant_id) 代表一个准确的变体。一个商品有多个变体，就会产生多条记录，也符合分片逻辑
-            if not is_variant:
-                continue
+                    is_variant = (typename == "ProductVariant") or (isinstance(node_id, str) and "/ProductVariant/" in node_id)
+                    if not is_variant:
+                        continue
 
-            # 取出需要的字段
-            sku = (row.get("sku") or "").strip()
-            if not (sku and isinstance(node_id, str)):
-                continue
+                    sku = (row.get("sku") or "").strip()
+                    if not (sku and isinstance(node_id, str)):
+                        continue
 
-            parent_id = row.get("__parentId")
-            tags: List[str] = []
-            if isinstance(parent_id, str):
-                tags = product_tags.get(parent_id) or []
+                    parent_id = row.get("__parentId")
+                    tags: List[str] = []
+                    if isinstance(parent_id, str):
+                        tags = product_tags.get(parent_id) or []
 
-            payload: Dict[str, Any] = {
-                "sku": sku,
-                "variant_id": node_id,
-            }
-            price = row.get("price")
-            if price is not None:
-                payload["price"] = price
-            payload["tags"] = list(tags)
-            yield payload
+                    if seen_variants < emitted_variants:
+                        # 重连后重新扫描到之前已产出的行 —— 计数但不再 yield
+                        seen_variants += 1
+                        continue
+
+                    payload: Dict[str, Any] = {
+                        "sku": sku,
+                        "variant_id": node_id,
+                    }
+                    price = row.get("price")
+                    if price is not None:
+                        payload["price"] = price
+                    payload["tags"] = list(tags)
+
+                    yield payload
+                    emitted_variants += 1
+                    seen_variants += 1
+
+                return  # 成功读完
+
+        except (ChunkedEncodingError, RequestsConnectionError, ReadTimeout) as exc:
+            attempt += 1
+            if attempt >= max_attempts:
+                logger.exception(
+                    "iter_variant_from_bulk exhausted retries: url=%s variants_emitted=%d",
+                    url,
+                    emitted_variants,
+                )
+                raise
+
+            wait = min(30.0, retry_backoff * attempt)
+            logger.warning(
+                "iter_variant_from_bulk reconnecting (attempt %d/%d, variants_emitted=%d): %s",
+                attempt,
+                max_attempts,
+                emitted_variants,
+                exc,
+            )
+            time.sleep(wait)
 
 
 

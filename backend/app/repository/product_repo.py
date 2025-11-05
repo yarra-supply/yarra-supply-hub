@@ -12,16 +12,15 @@ import math
 import uuid
 
 import sqlalchemy as sa
-from sqlalchemy import select, func, case, tuple_, bindparam, text, and_
+from sqlalchemy import select, func, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 import logging
 
-from sqlalchemy.sql.elements import BindParameter
+from sqlalchemy.sql.elements import BindParameter, ClauseElement
+from sqlalchemy.orm.attributes import QueryableAttribute
 from decimal import Decimal
-
-from sqlalchemy.exc import CompileError
 
 from app.db.model.product import SkuInfo, ProductSyncCandidate, ProductSyncChunk
 
@@ -43,10 +42,19 @@ SYNC_FIELDS = [
     "freight_tas_m", "freight_tas_r", "freight_vic_m", "freight_vic_r", "freight_wa_m",
     "freight_wa_r", "freight_nz",
     "attrs_hash_current",           # 新增：后续增量/5.3 计算需要
-    # "freight_by_zone",              # 若表里没有该列，后续 upsert 会忽略传值
+# "freight_by_zone",              # 若表里没有该列，后续 upsert 会忽略传值
 ]
 
-SKU_INFO_UPSERT_BATCH_SIZE = 500
+
+def _is_sqlalchemy_expression(value: Any) -> bool:
+    """
+    Detect whether a value is any SQLAlchemy SQL expression, column attribute, or bind.
+    """
+    if isinstance(value, (ClauseElement, BindParameter, QueryableAttribute)):
+        return True
+    if hasattr(value, "__clause_element__"):
+        return True
+    return False
 
 
 # 前端表格用到的主要字段（与 /products 返回一致
@@ -290,60 +298,89 @@ def diff_snapshot(old: dict|None, new: dict) -> dict:
    - 场景：给 orchestration/product_sync 用，批量写入变更的 SKU 记录
 """
 def bulk_upsert_sku_info(db, rows: list[dict], *, only_update_when_changed: bool=False) -> None:
-    # 传入的 rows 建议本身就是“只包含变更”的子集（上游已筛过），此处再加一层 where(changed) 保险。
+    """
+    把每条记录逐条 upsert。only_update_when_changed=True 时会先比对旧快照，未变更则跳过。
+    """
     if not rows:
         return
 
-    # 预检：确认不存在 SQLAlchemy BindParameter 之类的延迟绑定值
-    for idx, row in enumerate(rows):
-        for key, value in row.items():
-            if isinstance(value, BindParameter):
-                print(
-                    "[bulk_upsert_sku_info] BindParameter detected row",
-                    idx,
-                    "column",
-                    key,
-                    "value",
-                    value,
-                )
-                raise ValueError(
-                    f"row {idx} field {key} is BindParameter; provide plain Python value"
-                )
+    total = len(rows)
 
-    batch_size = max(1, SKU_INFO_UPSERT_BATCH_SIZE)
+    try:
+        deduped: dict[str, dict] = {}
+        for row in rows:
+            sku = row.get("sku_code")
+            if not sku:
+                continue
+            clean: dict[str, Any] = {}
+            for key, value in row.items():
+                if isinstance(value, BindParameter):
+                    value = getattr(value, "effective_value", getattr(value, "value", None))
+                if _is_sqlalchemy_expression(value):
+                    raise ValueError(
+                        f"bulk_upsert_sku_info sku={sku!r} field={key!r} is SQL expression ({type(value)!r}); provide plain Python value"
+                    )
+                if isinstance(value, Decimal) and not value.is_finite():
+                    value = None
+                if isinstance(value, float) and (math.isnan(value) or math.isinf(value)):
+                    value = None
+                clean[str(key)] = value
+            deduped[sku] = clean
 
-    for offset in range(0, len(rows), batch_size):
-        batch = rows[offset : offset + batch_size]
-        stmt = insert(SkuInfo).values(batch)
+        payload_rows = list(deduped.values())
+        if not payload_rows:
+            return
 
-        excluded_tuple = tuple_(*[getattr(stmt.excluded, c) for c in SYNC_FIELDS])
-        current_tuple = tuple_(*[getattr(SkuInfo, c) for c in SYNC_FIELDS])
-        changed = current_tuple.is_distinct_from(excluded_tuple)
-
-        updates = {c: getattr(stmt.excluded, c) for c in SYNC_FIELDS}
-
+        existing_map: dict[str, dict] = {}
         if only_update_when_changed:
-            updates.update({"updated_at": func.now(), "last_changed_at": func.now()})
-            stmt = stmt.on_conflict_do_update(
-                index_elements=[SkuInfo.sku_code],
-                set_=updates,
-                where=changed,
-            )
-        else:
+            skus = [r["sku_code"] for r in payload_rows if r.get("sku_code")]
+            if skus:
+                columns = [getattr(SkuInfo, c) for c in SYNC_FIELDS]
+                existing_rows = (
+                    db.execute(
+                        select(*columns).where(SkuInfo.sku_code.in_(skus))
+                    )
+                    .all()
+                )
+                for rec in existing_rows:
+                    row_dict = dict(zip(SYNC_FIELDS, rec))
+                    existing_map[row_dict["sku_code"]] = row_dict
+
+        now_expr = func.now()
+
+        for row in payload_rows:
+            sku = row.get("sku_code")
+            if not sku:
+                continue
+
+            if only_update_when_changed:
+                current = existing_map.get(sku)
+                if current is not None:
+                    if all(row.get(field) == current.get(field) for field in SYNC_FIELDS):
+                        continue
+
+            stmt = insert(SkuInfo).values(row)
+            updates = {field: getattr(stmt.excluded, field) for field in SYNC_FIELDS}
             updates.update(
                 {
-                    "updated_at": func.now(),
-                    "last_changed_at": case((changed, func.now()), else_=SkuInfo.last_changed_at),
+                    "updated_at": now_expr,
+                    "last_changed_at": now_expr,
                 }
             )
-            stmt = stmt.on_conflict_do_update(
-                index_elements=[SkuInfo.sku_code],
-                set_=updates,
+            db.execute(
+                stmt.on_conflict_do_update(
+                    index_elements=[SkuInfo.sku_code],
+                    set_=updates,
+                )
             )
-
-        db.execute(stmt)
-
-
+    except Exception:
+        logger.exception(
+            "bulk_upsert_sku_info failed: rows=%d only_update=%s sample=%s",
+            total,
+            only_update_when_changed,
+            rows[:3],
+        )
+        raise
 
 
 
@@ -365,69 +402,64 @@ def save_candidates(db: Session, run_id: str, tuples: list[tuple[str, dict]]) ->
     """
     if not tuples:
         return 0
-    
-    rows = []
-    seen = set()    # 同一次调用内的去重
-    
-    # def _jsonify(value, path=None):
-    #     path = path or []
-    #     if isinstance(value, Decimal):
-    #         return float(value)
-    #     if isinstance(value, (datetime, date)):
-    #         return value.isoformat()
-    #     if isinstance(value, dict):
-    #         return {k: _jsonify(v, path + [k]) for k, v in value.items()}
-    #     if isinstance(value, list):
-    #         return [_jsonify(v, path + [str(i)]) for i, v in enumerate(value)]
-    #     return value
-    
 
-    for sku, new_s in tuples:
-        if not new_s:
-            continue
-        key = (run_id, sku)
-        if key in seen:
-            continue
-        seen.add(key)
+    try:
+        rows = []
+        seen = set()    # 同一次调用内的去重
 
-        change_mask = {str(k): True for k in new_s.keys()}
-        change_count = len(change_mask)
-        if change_count == 0:
-            continue
+        for sku, new_s in tuples:
+            if not new_s:
+                continue
+            key = (run_id, sku)
+            if key in seen:
+                continue
+            seen.add(key)
 
-        snapshot = _to_jsonable(new_s)
-        # print("[save_candidates] sku", sku, "snapshot", snapshot)
+            change_mask = {str(k): True for k in new_s.keys()}
+            change_count = len(change_mask)
+            if change_count == 0:
+                continue
+
+            snapshot = _to_jsonable(new_s)
+            
+            rows.append({
+                "run_id": run_id,
+                "sku_code": sku,
+                "change_mask": change_mask,  # jsonb object
+                "new_snapshot": snapshot,       # 就是 new_s 本身，保存变化字段的新值，便于下游有选择地处理（比如只看价格变化）
+                "change_count": change_count,
+            })
+
+        if not rows:
+            return 0
         
-        rows.append({
-            "run_id": run_id,
-            "sku_code": sku,
-            "change_mask": change_mask,  # jsonb object
-            "new_snapshot": snapshot,       # 就是 new_s 本身，保存变化字段的新值，便于下游有选择地处理（比如只看价格变化）
-            "change_count": change_count,
-        })
+        # debug: print/log the size of rows being upserted
+        logger.info("[save_candidates] candidate rows size: %d", len(rows))
+        print(f"[save_candidates] candidate rows size: {len(rows)}")
 
-    if not rows:
-        return 0
-    
-    # debug: print/log the size of rows being upserted
-    logger.info("[save_candidates] candidate rows size: %d", len(rows))
-    print(f"[save_candidates] candidate rows size: {len(rows)}")
+        stmt = insert(ProductSyncCandidate).values(rows)   # 一次写入
 
-    stmt = insert(ProductSyncCandidate).values(rows)   # 一次写入
+        # 覆盖式 upsert：同键直接用新值覆盖（简单稳妥）
+        upsert_stmt = stmt.on_conflict_do_update(
+            index_elements=["run_id", "sku_code"],   # 依赖唯一索引/约束 UniqueConstraint
+            set_={
+                "change_mask": stmt.excluded.change_mask,
+                "new_snapshot": stmt.excluded.new_snapshot,
+                "change_count": stmt.excluded.change_count,
+                "updated_at": func.now(),
+            },
+        )
 
-    # 覆盖式 upsert：同键直接用新值覆盖（简单稳妥）
-    upsert_stmt = stmt.on_conflict_do_update(
-        index_elements=["run_id", "sku_code"],   # 依赖唯一索引/约束 UniqueConstraint
-        set_={
-            "change_mask": stmt.excluded.change_mask,
-            "new_snapshot": stmt.excluded.new_snapshot,
-            "change_count": stmt.excluded.change_count,
-            "updated_at": func.now(),
-        },
-    )
-
-    res = db.execute(upsert_stmt)
-    return res.rowcount or 0
+        res = db.execute(upsert_stmt)
+        return res.rowcount or 0
+    except Exception:
+        logger.exception(
+            "save_candidates failed: run=%s tuples=%d sample=%s",
+            run_id,
+            len(tuples),
+            tuples[:3],
+        )
+        raise
 
 
 
@@ -592,38 +624,62 @@ def mark_chunk_running(db: Session, run_id: str, idx: int) -> None:  # [NEW]
     将分片标记为 succeeded，并写入 DSZ 统计（计数 + 明细）。
     若模型不存在明细列，自动忽略（向后兼容）。
 """
-def mark_chunk_succeeded(db: Session, run_id: str, idx: int, stats: dict) -> None: 
+def mark_chunk_succeeded(db: Session, run_id: str, idx: int, stats: dict | None) -> None:
+    stats = stats or {}
+
     updates = {
         "status": "succeeded",
         "finished_at": func.now(),
-        "dsz_missing": int(stats.get("missing_count", 0)),
-        "dsz_failed_batches": int(stats.get("failed_batches_count", 0)),
-        "dsz_failed_skus": int(stats.get("failed_skus_count", 0)),
-        "dsz_requested_total": int(stats.get("requested_total", 0)),
-        "dsz_returned_total": int(stats.get("returned_total", 0)),
+        "dsz_missing": int(stats.get("missing_count") or 0),
+        "dsz_failed_batches": int(stats.get("failed_batches_count") or 0),
+        "dsz_failed_skus": int(stats.get("failed_skus_count") or 0),
+        "dsz_requested_total": int(stats.get("requested_total") or 0),
+        "dsz_returned_total": int(stats.get("returned_total") or 0),
     }
 
-    # 明细列表（若模型包含这些列则写入；否则忽略）
     if hasattr(ProductSyncChunk, "dsz_missing_sku_list"):
-        updates["dsz_missing_sku_list"] = stats.get("missing_sku_list", [])
+        updates["dsz_missing_sku_list"] = stats.get("missing_sku_list") or []
     if hasattr(ProductSyncChunk, "dsz_failed_sku_list"):
-        updates["dsz_failed_sku_list"] = stats.get("failed_sku_list", [])
+        updates["dsz_failed_sku_list"] = stats.get("failed_sku_list") or []
     if hasattr(ProductSyncChunk, "dsz_extra_sku_list"):
-        updates["dsz_extra_sku_list"] = stats.get("extra_sku_list", [])
+        updates["dsz_extra_sku_list"] = stats.get("extra_sku_list") or []
 
-    db.execute(
+    result = db.execute(
         sa.update(ProductSyncChunk)
-        .where(ProductSyncChunk.run_id == run_id, ProductSyncChunk.chunk_idx == idx)
+        .where(
+            ProductSyncChunk.run_id == run_id,
+            ProductSyncChunk.chunk_idx == idx,
+        )
         .values(**updates)
     )
+    if result.rowcount == 0:
+        logger.warning(
+            "mark_chunk_succeeded updated 0 rows: run=%s idx=%s",
+            run_id,
+            idx,
+        )
 
 
-def mark_chunk_failed(db: Session, run_id: str, idx: int, err: Exception|str) -> None:  # [NEW]
-    db.execute(
+def mark_chunk_failed(db: Session, run_id: str, idx: int, err: Exception | str) -> None:  # [NEW]
+    result = db.execute(
         sa.update(ProductSyncChunk)
-        .where(ProductSyncChunk.run_id==run_id, ProductSyncChunk.chunk_idx==idx)
-        .values(status="failed", finished_at=func.now(), last_error=str(err)[:2000])
+        .where(
+            ProductSyncChunk.run_id == run_id,
+            ProductSyncChunk.chunk_idx == idx,
+        )
+        .values(
+            status="failed",
+            finished_at=func.now(),
+            last_error=str(err)[:2000],
+        )
     )
+    if result.rowcount == 0:
+        logger.warning(
+            "mark_chunk_failed updated 0 rows: run=%s idx=%s err=%s",
+            run_id,
+            idx,
+            err,
+        )
 
 
 

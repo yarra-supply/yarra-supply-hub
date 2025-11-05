@@ -30,6 +30,8 @@ from app.repository.product_repo import (
 from app.orchestration.product_sync.scheduler import schedule_chunks_streaming
 from app.orchestration.product_sync.chunk_enricher import enrich_shopify_snapshot
 from app.orchestration.freight_calculation.freight_task import kick_freight_calc
+from sqlalchemy.sql.elements import BindParameter, ClauseElement
+from sqlalchemy.orm.attributes import QueryableAttribute
 
 # 可选 Redis 锁
 try:
@@ -41,6 +43,37 @@ except Exception:
 logger = logging.getLogger(__name__)
 _shopify = ShopifyClient()  # 单实例即可
 
+
+def _is_sqlalchemy_expression(value: Any) -> bool:
+    """
+    Detect SQLAlchemy expressions / ORM attributes that should not appear in payloads.
+    """
+    if isinstance(value, (ClauseElement, BindParameter, QueryableAttribute)):
+        return True
+    if hasattr(value, "__clause_element__"):
+        return True
+    return False
+
+
+def _assert_plain_snapshot_values(snapshot: Dict[str, Any], run_id: str, chunk_idx: int) -> None:
+    """
+    Guard against accidental SQLAlchemy expressions leaking into persistence payloads.
+    """
+    sku = snapshot.get("sku_code")
+    for field, value in snapshot.items():
+        if _is_sqlalchemy_expression(value):
+            logger.error(
+                "process_chunk detected non-plain value: run=%s idx=%s sku=%s field=%s type=%s value=%r",
+                run_id,
+                chunk_idx,
+                sku,
+                field,
+                type(value),
+                value,
+            )
+            raise ValueError(
+                f"process_chunk detected SQL expression in snapshot: run={run_id} chunk={chunk_idx} sku={sku} field={field} type={type(value)!r}"
+            )
 
 
 """
@@ -469,6 +502,7 @@ def process_chunk(run_id: str, chunk_idx: int,
         
         for n in normed:
             sku = n["sku_code"]
+            _assert_plain_snapshot_values(n, run_id, chunk_idx)
             old = old_map.get(sku)      # 找到旧记录
 
             changed_fields = diff_snapshot(old, n)   # 算差异: 通常会返回变化字段名集合或 {字段名: 新值} 的子集, 新增：也会被视为“有差异”, 无变化：返回空/None。
@@ -515,12 +549,19 @@ def process_chunk(run_id: str, chunk_idx: int,
             db.rollback()
 
         logger.info(
-            "chunk summary: run=%s idx=%s requested=%d returned=%d missing=%d failed_batches=%d failed_skus=%d",
-            run_id, chunk_idx, stats.get("requested_total"), stats.get("returned_total"),
-            stats.get("missing_count"), len(stats.get("missing_sku_list", [])),
-            stats.get("failed_batches_count", 0), stats.get("failed_skus_count", 0),
-            len(stats.get("failed_sku_list", [])), 
-            stats.get("extra_count", 0), len(stats.get("extra_sku_list", [])), # todo?
+            "chunk summary: run=%s idx=%s requested=%d returned=%d missing=%d missing_list=%d "
+            "failed_batches=%d failed_skus=%d failed_sku_list=%d extra=%d extra_list=%d",
+            run_id,
+            chunk_idx,
+            int(stats.get("requested_total", 0) or 0),
+            int(stats.get("returned_total", 0) or 0),
+            int(stats.get("missing_count", 0) or 0),
+            len(stats.get("missing_sku_list", []) or []),
+            int(stats.get("failed_batches_count", 0) or 0),
+            int(stats.get("failed_skus_count", 0) or 0),
+            len(stats.get("failed_sku_list", []) or []),
+            int(stats.get("extra_count", 0) or 0),
+            len(stats.get("extra_sku_list", []) or []),
         )
 
         # === 总耗时打印 ===
