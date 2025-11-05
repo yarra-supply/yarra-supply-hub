@@ -144,6 +144,28 @@ class DSZHttpClient:
 
         for attempt in range(1, max_attempts + 1):
             try:
+                # 打印入参便于观测（尽量脱敏 Authorization）
+                # try:
+                #     print("DSZ request:", {"attempt": attempt, "method": method, "url": url})
+                #     safe_headers = dict(headers)
+                #     if "Authorization" in safe_headers:
+                #         # 只保留前若干字符以便识别，同时避免泄漏完整 token
+                #         safe_headers["Authorization"] = safe_headers["Authorization"][:20] + "...(redacted)"
+                #     print("headers:", safe_headers)
+                #     if "json" in kwargs:
+                #         try:
+                #             print("json body:", json.dumps(kwargs["json"], ensure_ascii=False))
+                #         except Exception:
+                #             print("json body (raw):", kwargs["json"])
+                #     if "params" in kwargs:
+                #         print("params:", kwargs["params"])
+                #     # 输出其他 kwargs 中可序列化的项（避免打印文件流等大对象）
+                #     other = {k: v for k, v in kwargs.items() if k not in ("json", "params")}
+                #     if other:
+                #         print("other kwargs keys:", list(other.keys()))
+                # except Exception:
+                #     logger.exception("Failed to print DSZ request params")
+
                 resp = self._session.request(method, url, headers=headers, timeout=timeout, **kwargs)
 
                 # try:
@@ -230,17 +252,17 @@ class DSZHttpClient:
                 for _ in range(10):
                     allowed, wait_ms = limiter.acquire_once()    # wait_ms 令牌桶算法内部计算出来的
                     if allowed:  # 抢到了一个 token，可以立即发请求
-                        if global_hit:
-                            logger.info(
-                                "DSZ rate limit cleared after waiting %.3fs (global token bucket)",
-                                total_global_sleep,
-                            )
+                        # if global_hit:
+                        #     logger.info(
+                        #         "DSZ rate limit cleared after waiting %.3fs (global token bucket)",
+                        #         total_global_sleep,
+                        #     )
                         return
 
                     # 等待一段时间再重试
                     sleep_sec = max(0.001, (wait_ms or 1000) / 1000.0)
                     if not global_hit:
-                        logger.info("DSZ rate limit hit (global); sleeping %.3fs before retry", sleep_sec)
+                        # logger.info("DSZ rate limit hit (global); sleeping %.3fs before retry", sleep_sec)
                         global_hit = True
                     total_global_sleep += sleep_sec
                     time.sleep(sleep_sec)

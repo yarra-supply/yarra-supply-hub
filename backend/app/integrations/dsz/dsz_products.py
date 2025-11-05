@@ -49,7 +49,33 @@ def get_products_by_skus_with_stats(skus: Iterable[str]) -> Tuple[List[dict], Di
 """
 def get_zone_rates_by_skus(skus: Iterable[str]) -> List[dict]:
     api = DSZProductsAPI()
-    return api.fetch_zone_rates_by_skus(skus)
+    attempts = 2
+    backoff = 1.0
+
+    last_err: Optional[Exception] = None
+    for i in range(1, attempts + 1):
+        try:
+            return api.fetch_zone_rates_by_skus(skus)
+        except Exception as e:  # noqa: BLE001
+            last_err = e
+            if i >= attempts:
+                logger.error(
+                    "get_zone_rates_by_skus failed after %d attempts; err=%s",
+                    i, e
+                )
+                raise
+            # 进入重试分支，打 info 便于观测
+            logger.info(
+                "get_zone_rates_by_skus attempt %d/%d failed: %s; retrying in %.1fs",
+                i, attempts, e, backoff
+            )
+            time.sleep(backoff)
+            # 如需指数退避可改为：backoff *= 2
+
+    # 理论上不会走到这里，兜底抛出
+    if last_err:
+        raise last_err
+    return []
 
 
 
@@ -288,7 +314,14 @@ class DSZProductsAPI:
 
         for chunk in _chunked(all_skus, per_req):
             body = {"skus": ",".join(chunk), "page_no": 1, "limit": per_req}
-            payload = self.http.post_json(self.zone_endpoint, json_body=body)
+
+            # 打印请求入参，便于调试（优先美化 JSON，回退到原对象）
+            # try:
+            #     print("DSZ zone_rates request body:\n" + json.dumps(body, ensure_ascii=False, indent=2, default=str))
+            # except Exception:
+            #     print("DSZ zone_rates request body (fallback):", body)
+
+            payload = self.http.post_json(self.zone_endpoint, json_body=body) 
 
             # 解析 items
             items = self._extract_zone_rates_items(payload)

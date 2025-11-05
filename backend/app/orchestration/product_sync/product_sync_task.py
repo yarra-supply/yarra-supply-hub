@@ -370,8 +370,15 @@ def _handle_bulk_finish_logic(
 def process_chunk(run_id: str, chunk_idx: int, 
     sku_codes: list[Any], use_counter: bool = False
 ):
+    
+    # === 全函数计时开始 ===
+    _t_all_start = time.perf_counter()
 
     db = SessionLocal()
+    # 这两个变量用于异常情况下也能打印
+    _t_upsert_ms = None
+    _t_candidates_ms = None
+
     try:
         try:
             mark_chunk_running(db, run_id, chunk_idx)    # 标记 manifest：product_sync_chunks running
@@ -390,6 +397,10 @@ def process_chunk(run_id: str, chunk_idx: int,
                 "missing_sku_list": [], "failed_sku_list": [], "extra_sku_list": [] 
             })  
             db.commit()
+            # === 总耗时打印 ===
+            _t_all_ms = (time.perf_counter() - _t_all_start) * 1000.0
+            print(f"[TIMER] process_chunk run={run_id} idx={chunk_idx} total={_t_all_ms:.1f} ms (empty chunk)", flush=True)
+            
             return {
                 "changed": 0, "candidates": [], "missing_count": 0, "extra_count": 0,
                 "failed_batches_count": 0, "failed_skus_count": 0, "requested_total": 0, 
@@ -404,8 +415,7 @@ def process_chunk(run_id: str, chunk_idx: int,
             if variant_id:
                 vid_map[sku] = variant_id
 
-        # 2) 调 DSZ（内部：≤50/批 + 强重试 + 一致性告警）
-        # todo 让 get_products_by_skus_with_stats 把失败的 sku 列表（无法返回/子批失败）交出来？
+        # 2) 调 DSZ（内部：≤50/批 + 强重试 + 一致性告警）把失败的 sku 列表（无法返回/子批失败）返回
         items, stats = get_products_by_skus_with_stats(skus)
 
         # 3) 增加查询dsz的新接口获取sku的运费数据 /v2/get_zone_rates（仅 sku + standard）
@@ -474,9 +484,17 @@ def process_chunk(run_id: str, chunk_idx: int,
         if changed_rows or candidate_tuples:
             try:
                 if changed_rows:
+                    _t0 = time.perf_counter()
                     bulk_upsert_sku_info(db, changed_rows, only_update_when_changed=True)
+                    _t_upsert_ms = (time.perf_counter() - _t0) * 1000.0
+                    print(f"[TIMER] process_chunk run={run_id} idx={chunk_idx} bulk_upsert_sku_info rows={len(changed_rows)} time={_t_upsert_ms:.1f} ms", flush=True)
+                
                 if candidate_tuples:
+                    _t1 = time.perf_counter()
                     save_candidates(db, run_id, candidate_tuples)
+                    _t_candidates_ms = (time.perf_counter() - _t1) * 1000.0
+                    print(f"[TIMER] process_chunk run={run_id} idx={chunk_idx} save_candidates rows={len(candidate_tuples)} time={_t_candidates_ms:.1f} ms", flush=True)
+
                 db.commit()
             except Exception as exc:
                 db.rollback()
@@ -505,6 +523,14 @@ def process_chunk(run_id: str, chunk_idx: int,
             stats.get("extra_count", 0), len(stats.get("extra_sku_list", [])), # todo?
         )
 
+        # === 总耗时打印 ===
+        _t_all_ms = (time.perf_counter() - _t_all_start) * 1000.0
+        print(
+            f"[TIMER] process_chunk run={run_id} idx={chunk_idx} total={_t_all_ms:.1f} ms "
+            f"(upsert={_t_upsert_ms:.1f} ms, candidates={_t_candidates_ms:.1f} ms)",
+            flush=True
+        )
+
         return {
             "changed": len(changed_rows),
             "candidates": [sku for sku, _ in candidate_tuples],
@@ -525,6 +551,15 @@ def process_chunk(run_id: str, chunk_idx: int,
             db.rollback()
 
         logger.exception("chunk failed: run=%s idx=%s err=%s", run_id, chunk_idx, e)
+
+        # === 总耗时打印（异常路径）===
+        _t_all_ms = (time.perf_counter() - _t_all_start) * 1000.0
+        print(
+            f"[TIMER] process_chunk run={run_id} idx={chunk_idx} total={_t_all_ms:.1f} ms (FAILED) "
+            f"(upsert={_t_upsert_ms if _t_upsert_ms is not None else 0:.1f} ms, candidates={_t_candidates_ms if _t_candidates_ms is not None else 0:.1f} ms)",
+            flush=True
+        )
+        
         return {
             "changed": 0, "candidates": [], "missing_count": 0, "extra_count": 0,
             "failed_batches_count": 0, "failed_skus_count": 0, "requested_total": 0, "returned_total": 0,
