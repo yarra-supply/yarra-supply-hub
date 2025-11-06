@@ -110,7 +110,7 @@ def process_batch_compute_and_persist(
     for sku, fin in inputs:
 
         # 运费计算
-        out: FreightOutputs = compute_all(fin, cfg=cfg)
+        out: FreightOutputs = compute_all(fin, cfg=cfg, sku_code=sku)
         
         old = old_map.get(sku)
 

@@ -5,11 +5,14 @@ from dataclasses import dataclass
 from datetime import datetime, date, timedelta
 from typing import List, Dict, Any, Optional, Iterable, Mapping
 from statistics import median
-import hashlib, math
+import hashlib, logging, math
 from decimal import Decimal, ROUND_HALF_UP
 from zoneinfo import ZoneInfo
 
 from app.core.config import settings
+
+
+logger = logging.getLogger(__name__)
 
 
 # --------- 常量与工具 ----------
@@ -42,6 +45,7 @@ def _avg(values: list[Decimal]) -> Optional[Decimal]:
 _Q_CENTS = Decimal("0.01")
 _Q_THOUSAND = Decimal("0.001")
 _Q_RATIO = Decimal("0.0001")
+_MAX_NUMERIC_10_3 = Decimal("9999999.999")
 
 
 # 量化函数：按不同精度量化 为了和DB保持一致
@@ -278,6 +282,8 @@ def compute_cubic_weight(
     weight: Optional[float],
     cbm: Optional[float],
     cfg: Optional[Mapping[str, any]] = None,
+    *,
+    sku_code: Optional[str] = None,
 ) -> Optional[Decimal]:
     """
     CubicWeight：若 weight 或 CBM 为空 → null；
@@ -291,7 +297,27 @@ def compute_cubic_weight(
     headroom = _cfgD(cfg, "cubic_headroom", 1.0)
     if w > (c * factor - headroom):
         return None
-    return _round(c * factor, "0.01")
+    raw_cubic_weight = c * factor
+
+    if raw_cubic_weight.copy_abs() > _MAX_NUMERIC_10_3:
+        sku_ref = sku_code or "<unknown>"
+        logger.error(
+            "cubic_weight overflow detected: sku=%s cbm=%s weight=%s factor=%s "
+            "raw=%s threshold=%s",
+            sku_ref,
+            c,
+            w,
+            factor,
+            raw_cubic_weight,
+            _MAX_NUMERIC_10_3,
+        )
+        raise ValueError(
+            f"cubic_weight exceeds Numeric(10,3) limit ({_MAX_NUMERIC_10_3}) "
+            f"for sku={sku_ref}: {raw_cubic_weight}. "
+            "Verify sku_info.cbm / cubic_factor or enlarge the DB precision."
+        )
+
+    return _round(raw_cubic_weight, "0.01")
 
 
 """
@@ -547,7 +573,9 @@ def compute_kogan_nz_price(
 
 # --------- 顶层：一次性计算一行 SKU 的全部变量 ----------
 def compute_all(i: FreightInputs, 
-                cfg: Optional[Mapping[str, any]] = None) -> FreightOutputs:
+                cfg: Optional[Mapping[str, any]] = None,
+                *,
+                sku_code: Optional[str] = None) -> FreightOutputs:
 
     fr = i.state_freight or {}
 
@@ -565,7 +593,7 @@ def compute_all(i: FreightInputs,
     rural_ave = compute_rural_ave(remote_check, fr, shipping_ave)
     weighted_ave_s = compute_weighted_ave_s(remote_check, shipping_ave, rural_ave, cfg=cfg)
     shipping_med_dif = compute_shipping_med_dif(fr, shipping_med)
-    cubic_weight = compute_cubic_weight(i.weight, i.cbm, cfg=cfg)
+    cubic_weight = compute_cubic_weight(i.weight, i.cbm, cfg=cfg, sku_code=sku_code)
 
     shipping_type, price_ratio_val = compute_shipping_type(
         shipping_ave, same_shipping, shipping_med, rural_ave, shipping_med_dif,

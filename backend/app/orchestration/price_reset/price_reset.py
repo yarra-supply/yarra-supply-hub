@@ -188,7 +188,7 @@ def _process_batch(
             remote=_as_float(one_product.get("remote")),
             nz=_as_float(one_product.get("freight_nz")),
         )
-        out = compute_all(inputs)
+        out = compute_all(inputs, sku_code=sku)
 
         # 新值（按字段规范化后做对比/写回）
         new_vals: Dict[str, object] = {}
