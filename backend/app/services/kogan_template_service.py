@@ -22,6 +22,7 @@ from app.repository.kogan_template_repo import (
     iter_changed_skus,
     load_kogan_baseline_map,
     mark_job_status,
+    KoganTemplateModel,
 )
 
 
@@ -112,6 +113,14 @@ class ExportJobBuild:
     skus: List[str]
 
 
+
+# ======================= 辅助函数（用于更严谨地判定“是否有非SKU变更”） =======================
+def _has_non_key_diff(sparse: Dict[str, object], columns: Sequence[ColumnSpec]) -> bool:
+    """若 sparse 里包含任意一个非 always_include 列，视为存在真正变更（可导出）。"""
+    for col in columns:
+        if not col.always_include and col.logical_key in sparse:
+            return True
+    return False
 
 
 
@@ -240,6 +249,7 @@ def _build_export_dataset(
                 column_specs=column_specs,
                 product_row=product_map.get(sku, {}),
                 freight_row=freight_map.get(sku, {}),
+                baseline_row=baseline_map.get(sku),
             )
 
             # 5 - diff against baseline
@@ -252,17 +262,25 @@ def _build_export_dataset(
             if not sparse:
                 continue
 
-            # 6 - write csv row
-            row = [sparse.get(col.logical_key, "") for col in column_specs]
-            writer.writerow(row)
-            row_count += 1
-            all_skus.append(sku)
+            # ===================== 更严格的“非SKU变更”校验 =====================
+            if not _has_non_key_diff(sparse, column_specs):  # [CHANGED] 新增保护：仅 SKU 不导出
+                continue
 
             template_payload, changed_columns = _build_template_payload(
                 column_specs,
                 csv_full,
                 sparse,
             )
+
+            if not changed_columns:
+                # 没有实际字段变更，跳过该 SKU
+                continue
+
+            # 6 - write csv row
+            row = [sparse.get(col.logical_key, "") for col in column_specs]
+            writer.writerow(row)
+            row_count += 1
+            all_skus.append(sku)
 
             # 7 - record sku change
             sku_records.append(
@@ -405,6 +423,8 @@ def _map_to_kogan_csv_row(
     column_specs: Sequence[ColumnSpec],
     product_row: Dict[str, object],
     freight_row: Dict[str, object],
+    *,
+    baseline_row: Optional[KoganTemplateModel],
 ) -> Dict[str, object]:
    
     price_val = _resolve_price(country_type, product_row, freight_row)
@@ -434,6 +454,27 @@ def _map_to_kogan_csv_row(
         # "SKU_2": sku if country_type == "AU" else None,
         # "Category": _get_value(product_row, "category"),
     }
+
+    # populate columns we do not currently compute with baseline fallback
+    if baseline_row is not None:
+        for spec in column_specs:
+            if spec.always_include:
+                continue
+            if spec.model_col:
+                current_val = row.get(spec.logical_key)
+                if current_val is None:
+                    row[spec.logical_key] = getattr(baseline_row, spec.model_col, None)
+                else:
+                    # If current value is effectively empty (e.g. blank string), also fall back to baseline
+                    normalized = _normalize(current_val)
+                    if normalized is None:
+                        row[spec.logical_key] = getattr(baseline_row, spec.model_col, None)
+            else:
+                row.setdefault(spec.logical_key, None)
+    else:
+        for spec in column_specs:
+            row.setdefault(spec.logical_key, None)
+
     return {spec.logical_key: row.get(spec.logical_key) for spec in column_specs}
 
 

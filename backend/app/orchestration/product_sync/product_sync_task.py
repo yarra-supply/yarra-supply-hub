@@ -409,8 +409,8 @@ def process_chunk(run_id: str, chunk_idx: int,
 
     db = SessionLocal()
     # 这两个变量用于异常情况下也能打印
-    _t_upsert_ms = None
-    _t_candidates_ms = None
+    _t_upsert_s = None
+    _t_candidates_s = None
 
     try:
         try:
@@ -431,8 +431,8 @@ def process_chunk(run_id: str, chunk_idx: int,
             })  
             db.commit()
             # === 总耗时打印 ===
-            _t_all_ms = (time.perf_counter() - _t_all_start) * 1000.0
-            print(f"[TIMER] process_chunk run={run_id} idx={chunk_idx} total={_t_all_ms:.1f} ms (empty chunk)", flush=True)
+            _t_all_s = time.perf_counter() - _t_all_start
+            print(f"[TIMER] process_chunk run={run_id} idx={chunk_idx} total={_t_all_s:.3f} s (empty chunk)", flush=True)
             
             return {
                 "changed": 0, "candidates": [], "missing_count": 0, "extra_count": 0,
@@ -479,20 +479,17 @@ def process_chunk(run_id: str, chunk_idx: int,
             if std:  # 注入给 normalizer
                 raw_for_norm["_zone_standard"] = std
                 
-
-            # dsz + shopify 归一化内部字段
+            # a. dsz + shopify 归一化内部字段
             n = normalize_dsz_product(raw_for_norm)
 
-            # 补充 shopify 侧的增量字段
+            # b. 补充 shopify 侧的增量字段
             sku = n.get("sku_code")
             if sku:
                 enrich_shopify_snapshot(n, sku, vid_map, chunk_data_map)
 
-            # 计算属性哈希 —— 只使用 FREIGHT_HASH_FIELDS 中的入参字段
-            # 这是“运费敏感字段哈希”的唯一落库点：存入 SkuInfo.attrs_hash_current
+            # c. 计算属性哈希 —— 只使用 FREIGHT_HASH_FIELDS 中的入参字段, 这是“运费敏感字段哈希”的唯一落库点：存入 SkuInfo.attrs_hash_current
             n["attrs_hash_current"] = calc_attrs_hash_current(n)
-            # if sku:
-            #     print(f"product candidate sku={sku} length={n.get('length')!r} width={n.get('width')!r} height={n.get('height')!r}")
+
             normed.append(n)
 
 
@@ -505,15 +502,17 @@ def process_chunk(run_id: str, chunk_idx: int,
             _assert_plain_snapshot_values(n, run_id, chunk_idx)
             old = old_map.get(sku)      # 找到旧记录
 
-            changed_fields = diff_snapshot(old, n)   # 算差异: 通常会返回变化字段名集合或 {字段名: 新值} 的子集, 新增：也会被视为“有差异”, 无变化：返回空/None。
-            
+            # 1-算差异: 返回变化字段名集合或 {字段名: 新值} 的子集, 新增：也会被视为“有差异”, 无变化：返回空/None
             # changed_fields 是所有值不相等的字段名加入集合返回, 只有部分字段⚠️
+            changed_fields = diff_snapshot(old, n)   
+            
             if changed_fields:
-                # 但是这里append是完整记录，加入 upsert 列表 ⚠️
-                changed_rows.append(n)                               
-                new_partial = {k: n.get(k) for k in changed_fields}  # 提炼出变更字段的子集
+                changed_rows.append(n)     # 但是这里append是完整记录，加入 upsert 列表 ⚠️
 
-                # 记录成 (sku, 变更字段子集)，写入候选池
+                # 2-从n提炼出变更字段的子集，加入候选列表 ⚠️                            
+                new_partial = {k: n.get(k) for k in changed_fields} 
+
+                # 3-记录成 (sku, 变更字段子集)，写入候选池
                 candidate_tuples.append((sku, new_partial)) 
 
 
@@ -524,17 +523,17 @@ def process_chunk(run_id: str, chunk_idx: int,
                 if candidate_tuples:
                     _t0 = time.perf_counter()
                     bulk_upsert_sku_info_2(db, candidate_tuples)
-                    _t_upsert_ms = (time.perf_counter() - _t0) * 1000.0
+                    _t_upsert_s = time.perf_counter() - _t0
                     print(
-                        f"[TIMER] process_chunk run={run_id} idx={chunk_idx} bulk_upsert_sku_info_2 rows={len(candidate_tuples)} time={_t_upsert_ms:.1f} ms",
+                        f"[TIMER] process_chunk run={run_id} idx={chunk_idx} bulk_upsert_sku_info_2 rows={len(candidate_tuples)} time={_t_upsert_s:.3f} s",
                         flush=True,
                     )
                 
                 if candidate_tuples:
                     _t1 = time.perf_counter()
                     save_candidates(db, run_id, candidate_tuples)
-                    _t_candidates_ms = (time.perf_counter() - _t1) * 1000.0
-                    print(f"[TIMER] process_chunk run={run_id} idx={chunk_idx} save_candidates rows={len(candidate_tuples)} time={_t_candidates_ms:.1f} ms", flush=True)
+                    _t_candidates_s = time.perf_counter() - _t1
+                    print(f"[TIMER] process_chunk run={run_id} idx={chunk_idx} save_candidates rows={len(candidate_tuples)} time={_t_candidates_s:.3f} s", flush=True)
 
                 db.commit()
             except Exception as exc:
@@ -572,12 +571,12 @@ def process_chunk(run_id: str, chunk_idx: int,
         )
 
         # === 总耗时打印 ===
-        _t_all_ms = (time.perf_counter() - _t_all_start) * 1000.0
-        upsert_ms = _t_upsert_ms if _t_upsert_ms is not None else 0.0
-        candidates_ms = _t_candidates_ms if _t_candidates_ms is not None else 0.0
+        _t_all_s = time.perf_counter() - _t_all_start
+        upsert_s = _t_upsert_s if _t_upsert_s is not None else 0.0
+        candidates_s = _t_candidates_s if _t_candidates_s is not None else 0.0
         print(
-            f"[TIMER] process_chunk run={run_id} idx={chunk_idx} total={_t_all_ms:.1f} ms "
-            f"(upsert={upsert_ms:.1f} ms, candidates={candidates_ms:.1f} ms)",
+            f"[TIMER] process_chunk run={run_id} idx={chunk_idx} total={_t_all_s:.3f} s "
+            f"(upsert={upsert_s:.3f} s, candidates={candidates_s:.3f} s)",
             flush=True
         )
 
@@ -603,12 +602,12 @@ def process_chunk(run_id: str, chunk_idx: int,
         logger.exception("chunk failed: run=%s idx=%s err=%s", run_id, chunk_idx, e)
 
         # === 总耗时打印（异常路径）===
-        _t_all_ms = (time.perf_counter() - _t_all_start) * 1000.0
-        upsert_ms = _t_upsert_ms if _t_upsert_ms is not None else 0.0
-        candidates_ms = _t_candidates_ms if _t_candidates_ms is not None else 0.0
+        _t_all_s = time.perf_counter() - _t_all_start
+        upsert_s = _t_upsert_s if _t_upsert_s is not None else 0.0
+        candidates_s = _t_candidates_s if _t_candidates_s is not None else 0.0
         print(
-            f"[TIMER] process_chunk run={run_id} idx={chunk_idx} total={_t_all_ms:.1f} ms (FAILED) "
-            f"(upsert={upsert_ms:.1f} ms, candidates={candidates_ms:.1f} ms)",
+            f"[TIMER] process_chunk run={run_id} idx={chunk_idx} total={_t_all_s:.3f} s (FAILED) "
+            f"(upsert={upsert_s:.3f} s, candidates={candidates_s:.3f} s)",
             flush=True
         )
         

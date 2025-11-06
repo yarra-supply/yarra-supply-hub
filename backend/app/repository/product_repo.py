@@ -32,6 +32,7 @@ from app.db.model.product import SkuInfo, ProductSyncCandidate, ProductSyncChunk
 '''
 SYNC_FIELDS = [
     "sku_code", "brand", "stock_qty", 
+    "supplier", "ean_code",
     "price", "rrp_price", "special_price", "special_price_end_date", "shopify_price",
     "shopify_variant_id",
     "weight", "length", "width", "height", "cbm",
@@ -42,7 +43,6 @@ SYNC_FIELDS = [
     "freight_tas_m", "freight_tas_r", "freight_vic_m", "freight_vic_r", "freight_wa_m",
     "freight_wa_r", "freight_nz",
     "attrs_hash_current",           # 新增：后续增量/5.3 计算需要
-# "freight_by_zone",              # 若表里没有该列，后续 upsert 会忽略传值
 ]
 
 
