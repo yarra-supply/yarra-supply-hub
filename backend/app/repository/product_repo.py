@@ -383,6 +383,100 @@ def bulk_upsert_sku_info(db, rows: list[dict], *, only_update_when_changed: bool
         raise
 
 
+def bulk_upsert_sku_info_2(
+    db: Session,
+    changed: list[tuple[str, dict]],
+) -> int:
+    """
+    列级 upsert：仅更新传入字段，未提供的列保持原值（类似 freight_repo.update_changed_prices）。
+    适用于“已知哪些列发生变化”的场景。
+    """
+    if not changed:
+        return 0
+
+    # 去重：同一 SKU 只保留最后一次出现，并合并字段
+    merged: dict[str, dict[str, Any]] = {}
+    for sku, fields in changed:
+        if not sku or not fields:
+            continue
+        payload = merged.setdefault(str(sku), {})
+        for key, value in fields.items():
+            payload[str(key)] = value
+
+    if not merged:
+        return 0
+
+    model_cols: set[str] = set(SkuInfo.__table__.columns.keys())
+    meta_cols = {
+        "id",
+        "sku_code",
+        "created_at",
+        "updated_at",
+        "last_changed_at",
+    }
+
+    data_cols: set[str] = set()
+    for fields in merged.values():
+        for col in fields.keys():
+            if col in model_cols and col not in meta_cols:
+                data_cols.add(col)
+
+    rows_to_insert: list[dict[str, Any]] = []
+    now_expr = sa.func.now()
+    for sku, fields in merged.items():
+        row: dict[str, Any] = {"sku_code": sku}
+        for col in data_cols:
+            row[col] = fields.get(col)
+        row["updated_at"] = now_expr
+        row["last_changed_at"] = now_expr
+        rows_to_insert.append(row)
+
+    if not rows_to_insert:
+        return 0
+
+    table_cols = SkuInfo.__table__.c
+    total = 0
+    BATCH = 1000
+    for idx in range(0, len(rows_to_insert), BATCH):
+        chunk = rows_to_insert[idx : idx + BATCH]
+        stmt = insert(SkuInfo).values(chunk)
+        excluded = stmt.excluded
+
+        set_updates: dict[str, Any] = {}
+        for col in sorted(data_cols):
+            set_updates[col] = sa.func.coalesce(getattr(excluded, col), getattr(table_cols, col))
+
+        changed_terms = [
+            sa.and_(
+                getattr(excluded, col).isnot(None),
+                getattr(excluded, col).is_distinct_from(getattr(table_cols, col)),
+            )
+            for col in data_cols
+        ]
+        if changed_terms:
+            changed_pred = sa.or_(*changed_terms)
+        else:
+            changed_pred = sa.literal(False)
+
+        set_updates.update(
+            {
+                "updated_at": now_expr,
+                "last_changed_at": sa.case(
+                    (changed_pred, now_expr),
+                    else_=SkuInfo.last_changed_at,
+                ),
+            }
+        )
+
+        upsert_stmt = stmt.on_conflict_do_update(
+            index_elements=[SkuInfo.sku_code],
+            set_=set_updates,
+        )
+        res = db.execute(upsert_stmt)
+        total += int(res.rowcount or 0)
+
+    return total
+
 
 """
 批量保存变更候选记录

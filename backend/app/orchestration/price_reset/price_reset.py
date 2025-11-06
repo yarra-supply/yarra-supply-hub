@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Iterable, Iterator, List, Tuple, Dict, Any, Optional
 
@@ -16,6 +16,7 @@ from app.core.config import settings
 
 from app.repository.product_repo import iter_price_reset_candidates, load_state_freight_by_skus
 from app.repository.freight_repo import load_fee_rows_by_skus, update_changed_prices
+from app.db.model.product import ProductSyncRun
 from app.services.freight.freight_compute import (
     compute_all, FreightInputs as FCInputs,
 )
@@ -74,8 +75,19 @@ def kick_price_reset() -> dict:
     db: Session = SessionLocal()
     processed, changed_rows = 0, 0
     run_id = _gen_run_id()  # 生成一个这次流程的 run_id
+    product_run: ProductSyncRun | None = None
 
     try:
+        # 记录一次 price_reset 运行
+        product_run = ProductSyncRun(
+            run_type="price_reset",
+            status="running",
+            note=f"target_date={target_date}",
+        )
+        db.add(product_run)
+        db.commit()
+        db.refresh(product_run)
+
         batch: List[str] = []
         to_update = []   # (sku, {col->new})
 
@@ -113,12 +125,26 @@ def kick_price_reset() -> dict:
             changed_rows += len(to_update)
             to_update.clear()
         
+        if product_run:
+            product_run.status = "completed"
+            product_run.changed_count = changed_rows
+            product_run.finished_at = datetime.now(timezone.utc)
+            product_run.note = f"target_date={target_date}"
+            db.commit()
+
         logger.info("price_reset done date=%s processed=%d changed=%d", target_date, processed, changed_rows)
         return {"date": str(target_date), "processed": processed, "changed": changed_rows}
     
     except Exception as e:
         logger.exception("price_reset failed date=%s", target_date)
         db.rollback()
+        if product_run:
+            db.add(product_run)
+            product_run.status = "failed"
+            product_run.changed_count = changed_rows
+            product_run.finished_at = datetime.now(timezone.utc)
+            product_run.note = f"target_date={target_date} err={e}"
+            db.commit()
         return {"date": str(target_date), "processed": processed, "changed": changed_rows, "error": str(e)}
     finally:
         db.close()
@@ -195,7 +221,7 @@ def _process_batch(
         for col, attr in _OUTPUT_FIELDS:
             new_vals[col] = _normalize_value(col, getattr(out, attr, None))
 
-        # 只挑变化列
+        # ⚠️ 只挑变化列
         diffs: Dict[str, object] = {}
         for col in _TARGET_COLS:
             old_v = _normalize_value(col, one_old_price.get(col))

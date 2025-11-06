@@ -23,7 +23,7 @@ from app.integrations.dsz import (
 )
 from app.integrations.shopify.payload_utils import normalize_sku_payload
 from app.repository.product_repo import (
-    load_existing_by_skus, diff_snapshot, bulk_upsert_sku_info, save_candidates,
+    load_existing_by_skus, diff_snapshot, bulk_upsert_sku_info_2, save_candidates,
     load_variant_ids_by_skus, mark_chunk_running, mark_chunk_succeeded, mark_chunk_failed,
     collect_shopify_skus_for_run, purge_sku_info_absent_from,
 )
@@ -506,8 +506,11 @@ def process_chunk(run_id: str, chunk_idx: int,
             old = old_map.get(sku)      # 找到旧记录
 
             changed_fields = diff_snapshot(old, n)   # 算差异: 通常会返回变化字段名集合或 {字段名: 新值} 的子集, 新增：也会被视为“有差异”, 无变化：返回空/None。
+            
+            # changed_fields 是所有值不相等的字段名加入集合返回, 只有部分字段⚠️
             if changed_fields:
-                changed_rows.append(n)                               # 把完整新记录加入 upsert 列表
+                # 但是这里append是完整记录，加入 upsert 列表 ⚠️
+                changed_rows.append(n)                               
                 new_partial = {k: n.get(k) for k in changed_fields}  # 提炼出变更字段的子集
 
                 # 记录成 (sku, 变更字段子集)，写入候选池
@@ -517,11 +520,15 @@ def process_chunk(run_id: str, chunk_idx: int,
         # 5) upsert & 保存候选 一次事务提交，出错回滚
         if changed_rows or candidate_tuples:
             try:
-                if changed_rows:
+                # ⚠️ 改用candidate_tuples 更新
+                if candidate_tuples:
                     _t0 = time.perf_counter()
-                    bulk_upsert_sku_info(db, changed_rows, only_update_when_changed=True)
+                    bulk_upsert_sku_info_2(db, candidate_tuples)
                     _t_upsert_ms = (time.perf_counter() - _t0) * 1000.0
-                    print(f"[TIMER] process_chunk run={run_id} idx={chunk_idx} bulk_upsert_sku_info rows={len(changed_rows)} time={_t_upsert_ms:.1f} ms", flush=True)
+                    print(
+                        f"[TIMER] process_chunk run={run_id} idx={chunk_idx} bulk_upsert_sku_info_2 rows={len(candidate_tuples)} time={_t_upsert_ms:.1f} ms",
+                        flush=True,
+                    )
                 
                 if candidate_tuples:
                     _t1 = time.perf_counter()
@@ -566,9 +573,11 @@ def process_chunk(run_id: str, chunk_idx: int,
 
         # === 总耗时打印 ===
         _t_all_ms = (time.perf_counter() - _t_all_start) * 1000.0
+        upsert_ms = _t_upsert_ms if _t_upsert_ms is not None else 0.0
+        candidates_ms = _t_candidates_ms if _t_candidates_ms is not None else 0.0
         print(
             f"[TIMER] process_chunk run={run_id} idx={chunk_idx} total={_t_all_ms:.1f} ms "
-            f"(upsert={_t_upsert_ms:.1f} ms, candidates={_t_candidates_ms:.1f} ms)",
+            f"(upsert={upsert_ms:.1f} ms, candidates={candidates_ms:.1f} ms)",
             flush=True
         )
 
@@ -595,9 +604,11 @@ def process_chunk(run_id: str, chunk_idx: int,
 
         # === 总耗时打印（异常路径）===
         _t_all_ms = (time.perf_counter() - _t_all_start) * 1000.0
+        upsert_ms = _t_upsert_ms if _t_upsert_ms is not None else 0.0
+        candidates_ms = _t_candidates_ms if _t_candidates_ms is not None else 0.0
         print(
             f"[TIMER] process_chunk run={run_id} idx={chunk_idx} total={_t_all_ms:.1f} ms (FAILED) "
-            f"(upsert={_t_upsert_ms if _t_upsert_ms is not None else 0:.1f} ms, candidates={_t_candidates_ms if _t_candidates_ms is not None else 0:.1f} ms)",
+            f"(upsert={upsert_ms:.1f} ms, candidates={candidates_ms:.1f} ms)",
             flush=True
         )
         

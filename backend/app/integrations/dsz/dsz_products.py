@@ -141,7 +141,7 @@ class DSZProductsAPI:
 
                     # 解析 items 列表
                     items = self._extract_items(payload)  # 严格：必须是 list[dict]  
-                    print(f"DSZ payload items size={len(items)}")  
+                    # print(f"DSZ payload items size={len(items)}")  
 
                     break  # 成功
                 except Exception as e:
