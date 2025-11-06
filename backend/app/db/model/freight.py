@@ -31,7 +31,7 @@ class SkuFreightFee(Base):
     shipping_med_dif: Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 2))   # 运费中位数差值：remote - ShippingMed
 
     weight:           Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 2))   # 重新计算weight, 结果用于更新metafields的 + 添加到kogan上传表格上面
-    cubic_weight:     Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 3))   # 体积重 (长*宽*高/6000)
+    cubic_weight:     Mapped[Optional[Decimal]] = mapped_column(Numeric(14, 3))   # 体积重 (长*宽*高/6000)
     shipping_type:    Mapped[Optional[str]]   = mapped_column(String(24))         # 运费类型（0: FreeShipping, 1: Kogan 平台计算）
     price_ratio:      Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 4))   # RuralAve / Price 比值
 

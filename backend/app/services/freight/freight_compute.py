@@ -6,7 +6,7 @@ from datetime import datetime, date, timedelta
 from typing import List, Dict, Any, Optional, Iterable, Mapping
 from statistics import median
 import hashlib, logging, math
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import ROUND_HALF_EVEN, Decimal, ROUND_HALF_UP
 from zoneinfo import ZoneInfo
 
 from app.core.config import settings
@@ -45,7 +45,7 @@ def _avg(values: list[Decimal]) -> Optional[Decimal]:
 _Q_CENTS = Decimal("0.01")
 _Q_THOUSAND = Decimal("0.001")
 _Q_RATIO = Decimal("0.0001")
-_MAX_NUMERIC_10_3 = Decimal("9999999.999")
+# _MAX_NUMERIC_14_3 = Decimal("99999999999.999")
 
 
 # 量化函数：按不同精度量化 为了和DB保持一致
@@ -278,46 +278,6 @@ def compute_shipping_med_dif(
     return max(diffs)
 
 
-def compute_cubic_weight(
-    weight: Optional[float],
-    cbm: Optional[float],
-    cfg: Optional[Mapping[str, any]] = None,
-    *,
-    sku_code: Optional[str] = None,
-) -> Optional[Decimal]:
-    """
-    CubicWeight：若 weight 或 CBM 为空 → null；
-    否则若 weight > (CBM*250 - 1) → null；
-    否则 CubicWeight = round(CBM*250, 2)。:contentReference[oaicite:15]{index=15}
-    """
-    w = _d(weight); c = _d(cbm)
-    if w is None or c is None: return None
-
-    factor = _cfgD(cfg, "cubic_factor", 250.0)
-    headroom = _cfgD(cfg, "cubic_headroom", 1.0)
-    if w > (c * factor - headroom):
-        return None
-    raw_cubic_weight = c * factor
-
-    if raw_cubic_weight.copy_abs() > _MAX_NUMERIC_10_3:
-        sku_ref = sku_code or "<unknown>"
-        logger.error(
-            "cubic_weight overflow detected: sku=%s cbm=%s weight=%s factor=%s "
-            "raw=%s threshold=%s",
-            sku_ref,
-            c,
-            w,
-            factor,
-            raw_cubic_weight,
-            _MAX_NUMERIC_10_3,
-        )
-        raise ValueError(
-            f"cubic_weight exceeds Numeric(10,3) limit ({_MAX_NUMERIC_10_3}) "
-            f"for sku={sku_ref}: {raw_cubic_weight}. "
-            "Verify sku_info.cbm / cubic_factor or enlarge the DB precision."
-        )
-
-    return _round(raw_cubic_weight, "0.01")
 
 
 """
@@ -391,6 +351,55 @@ def compute_shipping_type(
     return str(result), price_ratio
 
 
+
+
+def compute_cubic_weight(
+    weight: Optional[float],
+    cbm: Optional[float],
+    cfg: Optional[Mapping[str, any]] = None,
+    *,
+    sku_code: Optional[str] = None,
+) -> Optional[Decimal]:
+    """
+    CubicWeight：若 weight 或 CBM 为空 → null；
+    否则若 weight > (CBM*250 - 1) → null；
+    否则 CubicWeight = round(CBM*250, 2)。:contentReference[oaicite:15]{index=15}
+    """
+    w = _d(weight); c = _d(cbm)
+    if w is None or c is None: return None
+
+    factor = _cfgD(cfg, "cubic_factor", 250.0)
+    headroom = _cfgD(cfg, "cubic_headroom", 1.0)
+    if w > (c * factor - headroom):
+        return None
+    raw_cubic_weight = c * factor
+
+    # if raw_cubic_weight.copy_abs() > _MAX_NUMERIC_14_3:
+    #     sku_ref = sku_code or "<unknown>"
+    #     logger.error(
+    #         "cubic_weight overflow detected: sku=%s cbm=%s weight=%s factor=%s "
+    #         "raw=%s threshold=%s",
+    #         sku_ref,
+    #         c,
+    #         w,
+    #         factor,
+    #         raw_cubic_weight,
+    #         _MAX_NUMERIC_14_3,
+    #     )
+    #     raise ValueError(
+    #         f"cubic_weight exceeds Numeric(14,3) limit ({_MAX_NUMERIC_14_3}) "
+    #         f"for sku={sku_ref}: {raw_cubic_weight}. "
+    #         "Verify sku_info.cbm / cubic_factor or enlarge the DB precision."
+    #     )
+
+    # todo check 保留2位小数
+    # return _round(raw_cubic_weight, "0.01")
+    
+    # 使用 Banker's Rounding（四舍六入五留双）到 2 位小数
+    return raw_cubic_weight.quantize(Decimal("0.01"), rounding=ROUND_HALF_EVEN)
+
+
+
 # --------- 新增：calculate weight ----------
 """
     对应《计算公式.txt》末尾“calculate weight”规则：
@@ -435,7 +444,10 @@ def compute_weight(
     result = max_weight if ratio_diff <= tolerance else calc_weight
     if result == 0:
         return None
-    return _round(result, "0.01")
+    
+    # todo check 不保留2位小数
+    return result
+    # return _round(result, "0.01")
 
 
 

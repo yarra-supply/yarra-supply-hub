@@ -34,7 +34,6 @@ _EXPORT_COLUMNS_SQL = [
     "f.kogan_k1_price",
     "f.kogan_nz_price",
     "COALESCE(si.product_tags, '[]'::jsonb) AS product_tags",
-    "si.price AS cost",
     "f.updated_at",
 ]
 

@@ -18,7 +18,6 @@ export interface FreightResult {
   weighted_ave_s?: number | null;
   cubic_weight?: number | null;   // 体积重
   remote_check?: boolean | null;  // 1 表示偏远不送（9999）
-  cost?: number | null;
   price_ratio?: number | null;
   selling_price?: number | null;
   shopify_price?: number | null;

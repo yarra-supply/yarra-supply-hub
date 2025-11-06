@@ -142,7 +142,7 @@ class Settings(BaseSettings):
     PROCESSING_WINDOW: int = 1000      # 500~1000
     CHORD_SPLIT_AT: int = 200          # 单个 chord 的最大 header 数量，超出则分层
     SYNC_CHUNK_SKUS: int = 5000        # todo 测试修改
-    FREIGHT_BATCH_SIZE: int = Field(500, alias="FREIGHT_BATCH_SIZE")
+    FREIGHT_BATCH_SIZE: int = Field(1000, alias="FREIGHT_BATCH_SIZE")
     
 
     # todo 需要写吗？）

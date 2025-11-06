@@ -2,6 +2,8 @@
 from __future__ import annotations
 import os
 from typing import List, Dict, Optional
+import time
+import logging
 from celery import shared_task
 from sqlalchemy.orm import Session
 from app.db.session import SessionLocal
@@ -18,6 +20,9 @@ from app.repository.freight_repo import (
 )
 from app.db.model.product import SkuInfo
 from app.db.model.freight import FreightRun
+
+
+logger = logging.getLogger(__name__)
 
 
 # 单批处理窗口（根据机器/DB 压力调整）
@@ -104,7 +109,10 @@ def freight_calc_run(
 
 
         # 4) 分批处理：进入批次循环时，Session 会自动开始一个新事务
+        loop_start = time.perf_counter()
+
         for i in range(0, len(target_skus), BATCH_SIZE):
+            iteration_start = time.perf_counter()
             batch = target_skus[i:i + BATCH_SIZE]
 
             # 运费计算 + DB更新
@@ -115,6 +123,25 @@ def freight_calc_run(
                 # 小批次提交后，# 如需唤醒派发器，可在此发一个轻量任务（示例）
                 # notify_shopify.delay(freight_run_id, batch_count=len(batch))
             changed_total += changed
+            iteration_elapsed = time.perf_counter() - iteration_start
+
+            logger.info(
+                "freight_calc_run batch=%d size=%d changed=%d elapsed=%.2fs",
+                (i // BATCH_SIZE) + 1,
+                len(batch),
+                changed,
+                iteration_elapsed,
+            )
+            
+        total_elapsed = time.perf_counter() - loop_start
+        total_batches = (len(target_skus) + BATCH_SIZE - 1) // BATCH_SIZE
+        logger.info(
+            "freight_calc_run finished batches=%d total_skus=%d changed_total=%d elapsed=%.2fs",
+            total_batches,
+            len(target_skus),
+            changed_total,
+            total_elapsed,
+        )
 
         # 3) 完成, update status of freight run, 一个很短的事务
         finish_freight_run(db, freight_run_id, status="completed", changed_count=changed_total)
