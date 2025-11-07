@@ -953,10 +953,10 @@ def load_products_map(db: Session, skus: List[str]) -> Dict[str, Dict[str, objec
             "barcode": getattr(r, "ean_code", None),
             "stock": getattr(r, "stock_qty", None),
             "brand": getattr(r, "brand", None),
+            "weight": getattr(r, "weight", None),
 
             # "kogan_first_price": getattr(r, "kogan_first_price", None),
             # "handling_days": getattr(r, "handling_days", None),
-            # "weight": getattr(r, "weight", None),
             # "title": getattr(r, "title", None),
             # "description": getattr(r, "description", None),
             # "subtitle": getattr(r, "subtitle", None),

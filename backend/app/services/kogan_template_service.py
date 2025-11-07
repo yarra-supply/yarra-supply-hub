@@ -429,6 +429,8 @@ def _map_to_kogan_csv_row(
    
     price_val = _resolve_price(country_type, product_row, freight_row)
     shipping_val = _resolve_shipping(country_type, freight_row)
+    weight_val = _resolve_weight(product_row, freight_row)
+
     rrp_val, kogan_first_price_val = _resolve_rrp_and_first_price(
         country_type,
         price_val,
@@ -445,7 +447,7 @@ def _map_to_kogan_csv_row(
         "Barcode": _get_value(product_row, "barcode"),
         "Stock": _get_value(product_row, "stock"),
         "Shipping": shipping_val,
-        "Weight": _get_value(freight_row, "weight"),
+        "Weight": weight_val,
         "Brand": _get_value(product_row, "brand"),
         # "Title": _get_value(product_row, "title"),
         # "Description": _get_value(product_row, "description"),
@@ -504,6 +506,22 @@ def _resolve_shipping(country_type: str, freight_row: Optional[Dict[str, object]
         if isinstance(shipping_type, str) and shipping_type.lower() in {"extra3", "extra4", "extra5"}:
             return "variable"
         return "0"
+
+
+
+# todo weight值获取
+def _resolve_weight(
+    product_row: Optional[Dict[str, object]],
+    freight_row: Optional[Dict[str, object]],
+) -> Optional[object]:
+    shipping_type = _get_value(freight_row, "shipping_type")
+    freight_weight = _get_value(freight_row, "weight")
+    product_weight = _get_value(product_row, "weight")
+
+    if isinstance(shipping_type, str) and shipping_type.lower() in {"extra3", "extra4", "extra5"}:
+        return freight_weight
+    return product_weight
+
 
 
 def _calculate_nz_rrp_and_first_price(price_decimal: Decimal) -> tuple[Decimal, Decimal]:
