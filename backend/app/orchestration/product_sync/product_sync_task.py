@@ -2,7 +2,7 @@
 from __future__ import annotations
 import logging, json, time
 from datetime import datetime, timezone
-from typing import List, Tuple, Dict, Any, Callable
+from typing import List, Tuple, Dict, Any, Callable, Optional
 import os
 import requests
 
@@ -44,44 +44,12 @@ logger = logging.getLogger(__name__)
 _shopify = ShopifyClient()  # 单实例即可
 
 
-def _is_sqlalchemy_expression(value: Any) -> bool:
-    """
-    Detect SQLAlchemy expressions / ORM attributes that should not appear in payloads.
-    """
-    if isinstance(value, (ClauseElement, BindParameter, QueryableAttribute)):
-        return True
-    if hasattr(value, "__clause_element__"):
-        return True
-    return False
-
-
-def _assert_plain_snapshot_values(snapshot: Dict[str, Any], run_id: str, chunk_idx: int) -> None:
-    """
-    Guard against accidental SQLAlchemy expressions leaking into persistence payloads.
-    """
-    sku = snapshot.get("sku_code")
-    for field, value in snapshot.items():
-        if _is_sqlalchemy_expression(value):
-            logger.error(
-                "process_chunk detected non-plain value: run=%s idx=%s sku=%s field=%s type=%s value=%r",
-                run_id,
-                chunk_idx,
-                sku,
-                field,
-                type(value),
-                value,
-            )
-            raise ValueError(
-                f"process_chunk detected SQL expression in snapshot: run={run_id} chunk={chunk_idx} sku={sku} field={field} type={type(value)!r}"
-            )
-
 
 """
   调试开关：True 时所有子任务在当前进程内同步执行。
 """
 def _inline_tasks_enabled() -> bool:
     return True
-
 
 
 
@@ -110,16 +78,21 @@ def sync_start_full_inline(**poll_kwargs: Any) -> str:
     3) 安排兜底轮询
 """
 def _sync_start_full_logic(*, inline: bool, poll_kwargs: Dict[str, Any] | None = None) -> str:
+
+    logger.info("sync_start_full_logic start inline=%s", inline)
+
     TAG = getattr(settings, "SHOPIFY_TAG_FULL_SYNC", "DropshipzoneAU")
     db = SessionLocal()
+    run_id: Optional[str] = None
 
     try:
         # 1. 建立 run 记录
         run = ProductSyncRun(status="running", run_type="full_sync")
         db.add(run); db.commit(); db.refresh(run)
+        run_id = run.id
 
         # 2. 发起 Shopify Bulk 内部已包含：429/网络重试、并发合流、可恢复 userErrors 的退避
-        try: 
+        try:
             node = _shopify.run_bulk_products_by_tag(TAG)
         except Exception as e:
             run.status = "failed"
@@ -127,13 +100,13 @@ def _sync_start_full_logic(*, inline: bool, poll_kwargs: Dict[str, Any] | None =
             logger.exception("failed to start shopify bulk: run=%s err=%s", run.id, e)
             raise
         logging.info("started shopify bulk: run=%s node=%s", run.id, node)
-       
+
         if not node or not node.get("id"):
             run.status = "failed"
             db.commit()
             return f"failed to start bulk: {node}"
-        
-        # 3. 保存 bulk_id 并安排轮询
+
+        # 3. 保存 bulk_id 并安排兜底轮询
         run.shopify_bulk_id = node["id"]   # 直接取 id
         db.commit()
 
@@ -150,6 +123,7 @@ def _sync_start_full_logic(*, inline: bool, poll_kwargs: Dict[str, Any] | None =
         return run.id
     finally:
         db.close()
+        logger.info("sync_start_full_logic end inline=%s run_id=%s", inline, run_id)
 
 
 
@@ -219,6 +193,8 @@ def _poll_bulk_until_ready_step(
     inline: bool,
     default_retry_delay: int = 60,
 ) -> tuple[bool, int | None, Any]:
+    
+    logger.info("query bulk operation status start run_id=%s attempt=%s", run_id, attempt)
 
     db = SessionLocal()
 
@@ -268,6 +244,7 @@ def _poll_bulk_until_ready_step(
             result = _dispatch_handle_bulk_finish(
                 bulk_id, url, root_object_count, inline=inline
             )
+            logger.info("query bulk operation status finish run_id=%s attempt=%s", run_id, attempt)
             return (False, None, result or "handled via polling")
 
         return (True, _poll_retry_delay(attempt, default_retry_delay), None)
@@ -403,6 +380,8 @@ def _handle_bulk_finish_logic(
 def process_chunk(run_id: str, chunk_idx: int, 
     sku_codes: list[Any], use_counter: bool = False
 ):
+    
+    logger.info("process_chunk start run=%s idx=%s size=%s", run_id, chunk_idx, len(sku_codes))
     
     # === 全函数计时开始 ===
     _t_all_start = time.perf_counter()
@@ -618,6 +597,7 @@ def process_chunk(run_id: str, chunk_idx: int,
     
     finally:
         db.close()
+        logger.info("process_chunk end idx=%s size=%s", chunk_idx, len(sku_codes))
 
 
 
@@ -810,6 +790,41 @@ def bulk_url_sweeper():
     finally:
         db.close()
 
+
+
+
+
+# ==================== helper functions =================
+def _is_sqlalchemy_expression(value: Any) -> bool:
+    """
+    Detect SQLAlchemy expressions / ORM attributes that should not appear in payloads.
+    """
+    if isinstance(value, (ClauseElement, BindParameter, QueryableAttribute)):
+        return True
+    if hasattr(value, "__clause_element__"):
+        return True
+    return False
+
+
+def _assert_plain_snapshot_values(snapshot: Dict[str, Any], run_id: str, chunk_idx: int) -> None:
+    """
+    Guard against accidental SQLAlchemy expressions leaking into persistence payloads.
+    """
+    sku = snapshot.get("sku_code")
+    for field, value in snapshot.items():
+        if _is_sqlalchemy_expression(value):
+            logger.error(
+                "process_chunk detected non-plain value: run=%s idx=%s sku=%s field=%s type=%s value=%r",
+                run_id,
+                chunk_idx,
+                sku,
+                field,
+                type(value),
+                value,
+            )
+            raise ValueError(
+                f"process_chunk detected SQL expression in snapshot: run={run_id} chunk={chunk_idx} sku={sku} field={field} type={type(value)!r}"
+            )
 
 
 def _send_ops_alert(message: str) -> None:

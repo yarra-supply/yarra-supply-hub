@@ -110,6 +110,9 @@ def schedule_chunks_streaming(
 
             task_id = f"ps:chunk:{run_id}:{chunk_idx}"
 
+            logger.info("schedule_chunks_streaming dispatch chunk run=%s idx=%s sku_count=%s",
+                run_id, chunk_idx, len(sku_entries))
+
             # sql更新/写入，此时未commit，不会写入
             upsert_chunk_pending(db, run_id, chunk_idx, sku_entries)
             db.commit()  # 立即提交 manifest，保证后续任务可见
@@ -147,16 +150,22 @@ def schedule_chunks_streaming(
     if inline_mode:
         from app.orchestration.product_sync.product_sync_task import finalize_run
         results = inline_results or []
+        logger.info("schedule_chunks_streaming end chunks=%s", idx)
         return finalize_run.run(results, run_id)
 
     if not sigs:
         signature(finalize_task_name).delay([], run_id)   # 没有SKU也要收口
+        logger.info("schedule_chunks_streaming end run=%s chunks=0 (no data)", run_id)
         return {"run_id": run_id, "chunks": 0}
 
     # 若“单个巨大 chord”不稳定/易失败，则把 header 拆分为多个“小 chord”，
     # 每个小 chord 的回调先聚合子结果；再用一个“外层 chord”统一收口并扁平化后交给 finalize_run。 这样可以显著降低后端对单个 chord 的压力，提升成功率。
     # todo 什么意思？
     if len(sigs) <= max(1, CHORD_SPLIT_AT):
+        logger.info(
+            "schedule_chunks_streaming end run=%s chunks=%s mode=single-chord",
+            run_id, len(sigs),
+        )
         return chord(group(sigs))(finalize_task_name.s(run_id)).id
 
     # 分层：把所有分片按 CHORD_SPLIT_AT 切成若干小组 → 小组内用 chord 收敛一次
@@ -171,43 +180,15 @@ def schedule_chunks_streaming(
 
     # 外层 chord：等待所有小 chord 的回调完成后，先扁平化，再调用 finalize_run
     final_canvas = chord(group(sub_chords), body=(flatten_results.s() | finalize_task_name.s(run_id)))
+    logger.info(
+        "schedule_chunks_streaming end run=%s chunks=%s mode=multi-chord buckets=%s",
+        run_id,
+        len(sigs),
+        len(sub_chords),
+    )
     return final_canvas().id
 
 
-
-# ====== “富行”解析：带条码/价格/原价/成本 ====== 当前没使用
-"""
-    返回字段：
-      product_id, variant_id, sku, barcode,
-      price, compare_at_price,
-      cost_amount, cost_currency
-"""
-# def iter_variants_from_bulk_full(url: str) -> Iterator[Dict[str, Any]]:
-    
-#     with requests.get(url, stream=True, timeout=(10, 300), headers={"Accept-Encoding": "gzip, deflate"}) as r:
-#         r.raise_for_status()
-#         for line in r.iter_lines(decode_unicode=True):
-#             if not line:
-#                 continue
-#             try:
-#                 obj = json.loads(line)
-#             except Exception:
-#                 continue
-#             if obj.get("__typename") != "ProductVariant":
-#                 continue
-
-#             inv = obj.get("inventoryItem") or {}
-#             unit_cost = inv.get("unitCost") or {}
-#             yield {
-#                 "product_id": obj.get("__parentId"),
-#                 "variant_id": obj.get("id"),
-#                 "sku": (obj.get("sku") or "").strip(),
-#                 "barcode": (obj.get("barcode") or "").strip(),
-#                 "price": obj.get("price"),
-#                 "compare_at_price": obj.get("compareAtPrice"),
-#                 "cost_amount": unit_cost.get("amount"),
-#                 "cost_currency": unit_cost.get("currencyCode"),
-#             }
 
 
 

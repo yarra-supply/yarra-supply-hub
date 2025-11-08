@@ -176,6 +176,7 @@ class DSZProductsAPI:
                 payload = self._fetch_one_batch(chunk)
                 return self._extract_items(payload)
             except Exception as e:
+                # 没重试啊？
                 if attempt >= per_batch_attempts:
                     if on_error == "raise":
                         raise
@@ -215,11 +216,11 @@ class DSZProductsAPI:
             retry_items = self._retry_missing_skus(list(missing))
             if retry_items:
                 logger.info(
-                    "DSZ products retry missing skus: requested=%d missing_before=%d retry_count=%d sample=%s",
+                    "DSZ products missing, retry one time, missing skus: requested=%d missing_before=%d retry_count=%d sample=%s",
                     len(req_set),
                     len(missing),
                     len(retry_items),
-                    list(sorted(missing))[:5],
+                    list(sorted(missing))[:10],
                 )
                 self._merge_items(
                     retry_items,
@@ -231,8 +232,8 @@ class DSZProductsAPI:
                 extra = returned - req_set
 
         if missing or extra:
-            logger.warning(
-                "DSZ products mismatch: requested=%d, returned=%d, missing=%d, extra=%d; sample_missing=%s; sample_extra=%s",
+            logger.error(
+                "DSZ products is still missing after retry: requested=%d, returned=%d, missing=%d, extra=%d; sample_missing=%s; sample_extra=%s",
                 len(req_set), len(returned), len(missing), len(extra),
                 list(sorted(missing))[:5], list(sorted(extra))[:5]
             )

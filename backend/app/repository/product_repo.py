@@ -571,8 +571,8 @@ def save_candidates(db: Session, run_id: str, tuples: list[tuple[str, dict]]) ->
             return 0
         
         # debug: print/log the size of rows being upserted
-        logger.info("[save_candidates] candidate rows size: %d", len(rows))
-        print(f"[save_candidates] candidate rows size: {len(rows)}")
+        # logger.info("[save_candidates] candidate rows size: %d", len(rows))
+        # print(f"[save_candidates] candidate rows size: {len(rows)}")
 
         stmt = insert(ProductSyncCandidate).values(rows)   # 一次写入
 
