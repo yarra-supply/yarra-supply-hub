@@ -84,6 +84,8 @@ export default function ProductsPage() {
     { title: 'Width/cm', dataIndex: 'width', width: 100 },
     { title: 'Height/cm)', dataIndex: 'height', width: 100 },
     { title: 'CBM', dataIndex: 'cbm', width: 100 },
+    { title: 'supplier', dataIndex: 'supplier', width: 100 },
+    { title: 'ean code', dataIndex: 'ean_code', width: 100 },
 
     { title: 'Freight (ACT)', dataIndex: 'freight_act', width: 100 },
     { title: 'Freight (NSW_M)', dataIndex: 'freight_nsw_m', width: 100 },

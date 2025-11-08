@@ -59,17 +59,58 @@ def _is_sqlalchemy_expression(value: Any) -> bool:
 
 # 前端表格用到的主要字段（与 /products 返回一致
 _PRODUCT_EXPORT_COLUMNS = [
-    "sku_code", "brand", "stock_qty", "product_tags",
-    "price", "rrp_price", "special_price", "special_price_end_date", "shopify_price",
-    "weight", "length", "width", "height", "cbm", 
-    
+    "sku_code", "stock_qty", "price", "rrp_price", "special_price", "special_price_end_date",
     "freight_act", "freight_nsw_m", "freight_nsw_r", "freight_nt_m", "freight_nt_r",
     "freight_qld_m", "freight_qld_r", "remote", "freight_sa_m", "freight_sa_r",
     "freight_tas_m", "freight_tas_r", "freight_vic_m", "freight_vic_r", "freight_wa_m",
     "freight_wa_r", "freight_nz",
-    "updated_at", 
+
+    "ean_code", "brand", "supplier", "weight", "length", "width", "height", "cbm",
+    "product_tags", "shopify_price","updated_at",
 ]
-_PRODUCT_CSV_HEADERS = _PRODUCT_EXPORT_COLUMNS[:]  # 头 = 同名
+
+_PRODUCT_HEADER_LABELS = {
+    "sku_code": "SKU",
+    "stock_qty": "Stock Qty",
+    "price": "price",
+    "rrp_price": "RrpPrice",
+    "special_price": "Special Price",
+    "special_price_end_date": "Special Price End Date",
+    
+    "freight_act": "ACT",
+    "freight_nsw_m": "NSW_M",
+    "freight_nsw_r": "NSW_R",
+    "freight_nt_m": "NT_M",
+    "freight_nt_r": "NT_R",
+    "freight_qld_m": "QLD_M",
+    "freight_qld_r": "QLD_R",
+    "remote": "REMOTE",
+    "freight_sa_m": "SA_M",
+    "freight_sa_r": "SA_R",
+    "freight_tas_m": "TAS_M",
+    "freight_tas_r": "TAS_R",
+    "freight_vic_m": "VIC_M",
+    "freight_vic_r": "VIC_R",
+    "freight_wa_m": "WA_M",
+    "freight_wa_r": "WA_R",
+    "freight_nz": "NZ",
+    "ean_code": "EAN Code",
+    "brand": "Brand",
+    "supplier": "Supplier",
+    "weight": "Weight(kg)",
+    "length": "Carton Length(cm)",
+    "width": "Carton Width(cm)",
+    "height": "Carton Height(cm)",
+    "cbm": "CBM",
+    "product_tags": "Product Tags",
+    "shopify_price": "Shopify Price",
+    "updated_at": "Updated At",
+}
+
+_PRODUCT_CSV_HEADERS = [
+    _PRODUCT_HEADER_LABELS.get(col, col) for col in _PRODUCT_EXPORT_COLUMNS
+]
+
 
 
 
@@ -157,6 +198,8 @@ def fetch_products_page(
             width,
             height,
             cbm,
+            supplier, 
+            ean_code,
             product_tags,
             attrs_hash_current,
             updated_at,
@@ -559,6 +602,18 @@ def save_candidates(db: Session, run_id: str, tuples: list[tuple[str, dict]]) ->
 
 
 
+def _format_product_tags(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    if isinstance(value, list):
+        tokens = [str(v).strip() for v in value if v is not None and str(v).strip()]
+        return ",".join(tokens)
+    if isinstance(value, dict):
+        return json.dumps(value, ensure_ascii=False)
+    return str(value)
+
+
+
 def _to_jsonable(value):
     """
     递归把任意 Python 值转换为 JSON 可序列化的原生类型：
@@ -799,53 +854,15 @@ def list_today_changed_skus(db, tz_name="Australia/Melbourne"):
 
 # ======== 导出商品列表为 CSV（流式） =========
 def export_products_csv_iter(
-    *, db=None, use_mock: bool, mock_rows: Optional[Iterable[Dict[str, Any]]] = None,
-    sku_prefix: Optional[str] = None, tags_csv: Optional[str] = None,
+    *, db=None, sku_prefix: Optional[str] = None, tags_csv: Optional[str] = None,
     prefer_sql: bool = True, flush_bytes: int = 64 * 1024,
 ):
-    """统一入口：现在用 mock；以后切 DB 仅改 use_mock=False。"""
-    if use_mock:
-        if mock_rows is None:
-            raise ValueError("use_mock=True 需提供 mock_rows")
-        return export_products_csv_iter_mock(
-            mock_rows, sku_prefix=sku_prefix, tags_csv=tags_csv, flush_bytes=flush_bytes
-        )
-    
-    # DB
+
     return export_products_csv_iter_sql(
         db, sku_prefix=sku_prefix, tags_csv=tags_csv, flush_bytes=flush_bytes
     )
 
 
-'''
- 从内存 mock 过滤并导出为 CSV
-'''
-def export_products_csv_iter_mock(
-    rows: Iterable[Dict[str, Any]],
-    *, sku_prefix: Optional[str], tags_csv: Optional[str],
-    flush_bytes: int = 64 * 1024,
-):
-    """从内存 mock 过滤并导出为 CSV（与 /products 筛选完全一致【:contentReference[oaicite:3]{index=3}】）"""
-    data = _filter_products_in_memory(rows, sku_prefix, tags_csv)
-
-    buf = io.StringIO()
-    w = csv.writer(buf)
-    w.writerow(_PRODUCT_CSV_HEADERS)
-    yield buf.getvalue(); buf.seek(0); buf.truncate(0)
-
-    for r in data:
-        row = {k: r.get(k) for k in _PRODUCT_CSV_HEADERS}
-        # product_tags 序列化成人类可读 JSON
-        if isinstance(row.get("product_tags"), (list, dict)):
-            row["product_tags"] = json.dumps(row["product_tags"], ensure_ascii=False)
-        w.writerow([row.get(k) for k in _PRODUCT_CSV_HEADERS])
-
-        if buf.tell() >= flush_bytes:
-            yield buf.getvalue(); buf.seek(0); buf.truncate(0)
-
-    left = buf.getvalue()
-    if left:
-        yield left
 
 
 # ========= 内存中过滤商品列表（给 /products 导出mock 用） =========
@@ -915,10 +932,9 @@ def export_products_csv_iter_sql(
     keys = rs.keys()
     for rec in rs:
         d = dict(zip(keys, rec))
-        if isinstance(d.get("product_tags"), (list, dict)):
-            d["product_tags"] = json.dumps(d["product_tags"], ensure_ascii=False)
+        d["product_tags"] = _format_product_tags(d.get("product_tags"))
         # special_price_end_date/updated_at 让数据库按默认文本输出（或自行格式化）
-        w.writerow([d.get(k) for k in _PRODUCT_CSV_HEADERS])
+        w.writerow([d.get(k) for k in _PRODUCT_EXPORT_COLUMNS])
 
         if buf.tell() >= flush_bytes:
             yield buf.getvalue(); buf.seek(0); buf.truncate(0)

@@ -514,7 +514,6 @@ def _resolve_shipping(country_type: str, freight_row: Optional[Dict[str, object]
 
 
 
-# todo weight值获取
 def _resolve_weight(
     product_row: Optional[Dict[str, object]],
     freight_row: Optional[Dict[str, object]],

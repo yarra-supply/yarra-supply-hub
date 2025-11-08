@@ -29,11 +29,15 @@ def normalize_dsz_product(raw: Dict[str, Any]) -> Dict[str, Any]:
     brand = raw.get("brand")
     if isinstance(brand, str):
         brand = brand.strip()
+        brand_lower = brand.lower()
+        fallback_keywords = ("unbranded", "does not apply", "na", "genetic")
+        if any(keyword in brand_lower for keyword in fallback_keywords):
+            brand = ""
     if not brand:
         brand = "Yarra Supply"
     out["brand"] = brand
 
-    out["supplier"] = "Yarra Supply"
+    out["supplier"] = raw.get("vendor_id")
 
     out["stock_qty"] = _to_int(raw.get("stock_qty"))
 

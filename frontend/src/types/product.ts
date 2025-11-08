@@ -18,6 +18,8 @@ export interface Product {
   height?: number;
   weight?: number;
   cbm?: number;
+  supplier?: string;
+  ean_code?: string;
 
   // freight: Freight;  // 取消嵌套对象，直接扁平字段
   freight_act?: number;
