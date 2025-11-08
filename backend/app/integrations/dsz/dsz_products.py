@@ -121,81 +121,27 @@ class DSZProductsAPI:
         stats["requested_total"] = len(all_skus)
 
         # 每批“实际请求大小” = min(DSZ_BATCH_SIZE, 接口硬上限)
-        per_req = min(settings.DSZ_PRODUCTS_MAX_PER_REQ, self.max_per_req)
+        per_req = self.max_per_req
+        # 目前default的limit是40 ，可以通过添加&limit=50 来达到50个每页
 
         # 逐批调用
         for chunk in _chunked(all_skus, per_req):
-            # todo 重试这么写？
-            # —— 子批强重试（外层），叠加 http_client 内部 429/5xx/网络重试 ——
-            attempt = 0
-            while True:
-                attempt += 1
-                try:
-                    payload = self._fetch_one_batch(chunk)
-                    # try:
-                    #     # 使用 json.dumps 美化输出，ensure_ascii=False 保留中文，default=str 处理不可序列化对象
-                    #     print("DSZ payload:\n" + json.dumps(payload, ensure_ascii=False, indent=2, default=str))
-                    # except Exception:
-                    #     print("DSZ payload (fallback):")
-                    #     pprint(payload)
-
-                    # 解析 items 列表
-                    items = self._extract_items(payload)  # 严格：必须是 list[dict]  
-                    # print(f"DSZ payload items size={len(items)}")  
-
-                    break  # 成功
-                except Exception as e:
-                    if attempt >= per_batch_attempts:
-                        if on_error == "raise":
-                            raise
-                        # 统计并跳过
-                        logger.error(
-                            "DSZ sub-batch failed after %d attempts; skip. size=%d; sample=%s; err=%s",
-                            attempt, len(chunk), chunk[:5], e
-                        )
-                        stats["failed_batches_count"] += 1
-                        stats["failed_skus_count"] += len(chunk)
-                        
-                        if collect_failed_detail:            
-                            stats["failed_sku_list"].extend(chunk[: self.max_per_req])
-                            # 样本保留 20 条即可
-                            sample = stats["failed_skus_sample"]
-                            need = max(0, 20 - len(sample))
-                            if need:
-                                sample.extend(chunk[:need])
-
-                        items = []  # 本子批无结果
-                        break
-                    time.sleep(per_batch_backoff_sec)
-
-            # 收集返回 SKU & 去重合并
-            returned = set()
-            for it in items:
-                sku = self._extract_sku(it)
-                if sku:
-                    returned.add(sku)
-                if (not sku) or (sku not in seen):
-                    results.append(it)
-                    if sku:
-                        seen.add(sku)
-
-            # 一致性检查（严格以官方字段 sku 判定）
-            req_set = set(chunk)
-            missing = req_set - returned
-            extra   = returned - req_set
-            if missing or extra:
-                logger.warning(
-                    "DSZ products mismatch: requested=%d, returned=%d, missing=%d, extra=%d; sample_missing=%s; sample_extra=%s",
-                    len(req_set), len(returned), len(missing), len(extra),
-                    list(sorted(missing))[:5], list(sorted(extra))[:5]
-                )
-            stats["missing_count"] += len(missing)
-            stats["extra_count"]   += len(extra)
-            if collect_failed_detail:     
-                if missing:
-                    stats["missing_sku_list"].extend(list(missing)[: self.max_per_req])
-                if extra:
-                    stats["extra_sku_list"].extend(list(extra)[: self.max_per_req])
+            items = self._fetch_chunk_items(
+                chunk,
+                per_batch_attempts=per_batch_attempts,
+                per_batch_backoff_sec=per_batch_backoff_sec,
+                on_error=on_error,
+                collect_failed_detail=collect_failed_detail,
+                stats=stats,
+            )
+            self._process_chunk_results(
+                chunk=chunk,
+                items=items,
+                results=results,
+                seen=seen,
+                stats=stats,
+                collect_failed_detail=collect_failed_detail,
+            )
 
         stats["returned_total"] = len(results)
         return (results, stats) if return_stats else results
@@ -206,8 +152,166 @@ class DSZProductsAPI:
     # test ✅
     def _fetch_one_batch(self, skus: List[str]) -> Any:
         """调用一次 DSZ /v2/products，处理单批最多 max_per_req 个 SKU。"""
-        params: Dict[str, Any] = {self.sku_param: ",".join(skus)}
+        params: Dict[str, Any] = {
+            self.sku_param: ",".join(skus),
+            "limit": min(self.max_per_req, max(len(skus), 1)),
+        }
         return self.http.get_json(self.endpoint, params=params)
+
+
+    def _fetch_chunk_items(
+        self,
+        chunk: List[str],
+        *,
+        per_batch_attempts: int,
+        per_batch_backoff_sec: float,
+        on_error: str,
+        collect_failed_detail: bool,
+        stats: Dict[str, Any],
+    ) -> List[dict]:
+        attempt = 0
+        while True:
+            attempt += 1
+            try:
+                payload = self._fetch_one_batch(chunk)
+                return self._extract_items(payload)
+            except Exception as e:
+                if attempt >= per_batch_attempts:
+                    if on_error == "raise":
+                        raise
+                    logger.error(
+                        "DSZ sub-batch failed after %d attempts; skip. size=%d; sample=%s; err=%s",
+                        attempt, len(chunk), chunk[:5], e
+                    )
+                    self._record_failed_batch(chunk, stats, collect_failed_detail)
+                    return []
+                time.sleep(per_batch_backoff_sec)
+
+
+    def _process_chunk_results(
+        self,
+        *,
+        chunk: List[str],
+        items: List[dict],
+        results: List[dict],
+        seen: set[str],
+        stats: Dict[str, Any],
+        collect_failed_detail: bool,
+    ) -> None:
+        returned: set[str] = set()
+
+        self._merge_items(
+            items,
+            results=results,
+            seen=seen,
+            returned=returned,
+        )
+
+        req_set = set(chunk)
+        missing = req_set - returned
+        extra = returned - req_set
+
+        if missing:
+            retry_items = self._retry_missing_skus(list(missing))
+            if retry_items:
+                logger.info(
+                    "DSZ products retry missing skus: requested=%d missing_before=%d retry_count=%d sample=%s",
+                    len(req_set),
+                    len(missing),
+                    len(retry_items),
+                    list(sorted(missing))[:5],
+                )
+                self._merge_items(
+                    retry_items,
+                    results=results,
+                    seen=seen,
+                    returned=returned,
+                )
+                missing = req_set - returned
+                extra = returned - req_set
+
+        if missing or extra:
+            logger.warning(
+                "DSZ products mismatch: requested=%d, returned=%d, missing=%d, extra=%d; sample_missing=%s; sample_extra=%s",
+                len(req_set), len(returned), len(missing), len(extra),
+                list(sorted(missing))[:5], list(sorted(extra))[:5]
+            )
+
+        self._record_missing_extra(
+            missing,
+            extra,
+            stats=stats,
+            collect_failed_detail=collect_failed_detail,
+        )
+
+
+    def _merge_items(
+        self,
+        items: List[dict],
+        *,
+        results: List[dict],
+        seen: set[str],
+        returned: set[str],
+    ) -> None:
+        for it in items:
+            sku = self._extract_sku(it)
+            if sku:
+                returned.add(sku)
+            if (not sku) or (sku not in seen):
+                results.append(it)
+                if sku:
+                    seen.add(sku)
+
+
+    def _record_failed_batch(
+        self,
+        chunk: List[str],
+        stats: Dict[str, Any],
+        collect_failed_detail: bool,
+    ) -> None:
+        stats["failed_batches_count"] += 1
+        stats["failed_skus_count"] += len(chunk)
+        if not collect_failed_detail:
+            return
+        stats["failed_sku_list"].extend(chunk[: self.max_per_req])
+        sample = stats["failed_skus_sample"]
+        need = max(0, 20 - len(sample))
+        if need:
+            sample.extend(chunk[:need])
+
+    def _record_missing_extra(
+        self,
+        missing: set[str],
+        extra: set[str],
+        *,
+        stats: Dict[str, Any],
+        collect_failed_detail: bool,
+    ) -> None:
+        stats["missing_count"] += len(missing)
+        stats["extra_count"] += len(extra)
+        if not collect_failed_detail:
+            return
+        if missing:
+            stats["missing_sku_list"].extend(list(missing)[: self.max_per_req])
+        if extra:
+            stats["extra_sku_list"].extend(list(extra)[: self.max_per_req])
+
+
+    def _retry_missing_skus(self, missing_skus: List[str]) -> List[dict]:
+        """落地一次补偿请求：仅针对缺失 SKU，再拉取一次。失败时静默回退。"""
+        if not missing_skus:
+            return []
+        try:
+            payload = self._fetch_one_batch(missing_skus)
+            return self._extract_items(payload)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Retry missing SKUs failed: count=%d sample=%s err=%s",
+                len(missing_skus),
+                missing_skus[:5],
+                exc,
+            )
+            return []
     
 
 
