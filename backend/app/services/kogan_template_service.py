@@ -77,6 +77,7 @@ COUNTRY_COLUMN_SPECS: Dict[str, List[ColumnSpec]] = {
     ],
 }
 
+HEADER_ONLY_COLUMNS = {"Stock", "Barcode"}
 
 def _get_column_specs(country_type: str) -> List[ColumnSpec]:
     try:
@@ -390,6 +391,8 @@ def _diff_against_baseline(
         if col.always_include:
             sparse[key] = csv_row.get(key)
             continue
+        if key in HEADER_ONLY_COLUMNS:
+            continue
 
         if not model_col:
             continue
@@ -431,12 +434,13 @@ def _map_to_kogan_csv_row(
     shipping_val = _resolve_shipping(country_type, freight_row)
     weight_val = _resolve_weight(product_row, freight_row)
 
-    rrp_val, kogan_first_price_val = _resolve_rrp_and_first_price(
-        country_type,
-        price_val,
-        product_row,
-        freight_row,
-    )
+    rrp_val = _resolve_rrp_price(country_type, price_val, product_row, freight_row)
+
+    kogan_first_price_val = _resolve_first_price(country_type, price_val, product_row, freight_row)
+
+    # 修改template k1 price
+    if price_val is not None and price_val > Decimal("67"):
+        kogan_first_price_val = None
 
     row = {
         "SKU": sku,
@@ -444,11 +448,12 @@ def _map_to_kogan_csv_row(
         "RRP": rrp_val,
         "Kogan First Price": kogan_first_price_val,
         "Handling Days": 3,
-        "Barcode": _get_value(product_row, "barcode"),
-        "Stock": _get_value(product_row, "stock"),
         "Shipping": shipping_val,
         "Weight": weight_val,
         "Brand": _get_value(product_row, "brand"),
+
+        # "Stock": _get_value(product_row, "stock"),         # stock/barcode现在不导出
+        # "Barcode": _get_value(product_row, "barcode"),
         # "Title": _get_value(product_row, "title"),
         # "Description": _get_value(product_row, "description"),
         # "Subtitle": _get_value(product_row, "subtitle"),
@@ -520,36 +525,49 @@ def _resolve_weight(
 
     if isinstance(shipping_type, str) and shipping_type.lower() in {"extra3", "extra4", "extra5"}:
         return freight_weight
-    return product_weight
+    return None
 
 
 
-def _calculate_nz_rrp_and_first_price(price_decimal: Decimal) -> tuple[Decimal, Decimal]:
-    rrp = (price_decimal * Decimal("1.5")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-    if price_decimal > Decimal("66.7"):
-        kogan_first_price = (price_decimal * Decimal("0.969")).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
-    else:
-        kogan_first_price = (price_decimal - Decimal("2.01")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-    return rrp, kogan_first_price
-
-
-def _resolve_rrp_and_first_price(
+def _resolve_rrp_price(
     country_type: str,
     price_val: Optional[object],
     product_row: Optional[Dict[str, object]],
     freight_row: Optional[Dict[str, object]],
-) -> tuple[Optional[object], Optional[object]]:
+) -> Optional[object]:
+    price_decimal = _to_decimal(price_val)
+    if price_decimal is None:
+        return None
+    return (price_decimal * Decimal("1.5")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+
+
+def _resolve_first_price(
+    country_type: str,
+    price_val: Optional[object],
+    product_row: Optional[Dict[str, object]],
+    freight_row: Optional[Dict[str, object]],
+) -> Optional[object]:
     if country_type == "AU":
-        rrp_val = _get_value(product_row, "rrp")
-        kogan_first_price_val = _get_value(freight_row, "kogan_k1_price")
-        return rrp_val, kogan_first_price_val
+        return _get_value(freight_row, "kogan_k1_price")
 
     price_decimal = _to_decimal(price_val)
     if price_decimal is None:
-        return None, None
-    return _calculate_nz_rrp_and_first_price(price_decimal)
+        return None
+    return _calculate_nz_first_price(price_decimal)
 
 
+def _calculate_nz_first_price(price_decimal: Decimal) -> Decimal:
+    if price_decimal > Decimal("66.7"):
+        return (price_decimal * Decimal("0.969")).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+    return (price_decimal - Decimal("2.01")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+
+
+
+
+
+# ====================== 辅助函数 =======================
 def _to_decimal(value: object) -> Optional[Decimal]:
     if value is None:
         return None

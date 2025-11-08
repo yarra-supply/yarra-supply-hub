@@ -26,7 +26,7 @@
 #         pytest.skip("Database connection is not available for freight task integration test")
 
 #     print("[debug] running kick_freight_calc with inline execution")
-#     result = freight_task.kick_freight_calc.run(product_run_id="70dbf7fd-5378-4a96-b528-1e37615d041d", trigger="test-debug-1107")
+#     result = freight_task.kick_freight_calc.run(product_run_id="7294fe44-60cc-4909-b423-180e6b41c5a5", trigger="test-debug-1107-2")
 
 #     print("[debug] kick_freight_calc result", result)
 #     assert isinstance(result, dict)

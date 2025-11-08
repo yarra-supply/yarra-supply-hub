@@ -325,7 +325,7 @@ class DSZProductsAPI:
 
             # 解析 items
             items = self._extract_zone_rates_items(payload)
-            print(f"DSZ zone_rates items size={len(items)}")
+            # print(f"DSZ zone_rates items size={len(items)}")
 
             returned = {str((it or {}).get("sku") or "").strip() for it in items if isinstance(it, dict)}
             returned.discard("")
