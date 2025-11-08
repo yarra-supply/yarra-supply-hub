@@ -14,7 +14,6 @@ from sqlalchemy.orm import Session
 # —— 约定导出列（与前端展示一致） —— #
 _EXPORT_COLUMNS_SQL = [
     "f.sku_code",
-    "f.shipping_type",
     "f.adjust",
     "f.same_shipping",
     "f.shipping_ave",
@@ -26,19 +25,46 @@ _EXPORT_COLUMNS_SQL = [
     "f.weighted_ave_s",
     "f.shipping_med_dif",
     "f.cubic_weight",
-    "f.weight",
     "f.price_ratio",
+    "f.shipping_type",
     "f.selling_price",
     "f.shopify_price",
     "f.kogan_au_price",
     "f.kogan_k1_price",
     "f.kogan_nz_price",
+    "f.weight",
     "COALESCE(si.product_tags, '[]'::jsonb) AS product_tags",
     "f.updated_at",
 ]
 
-# CSV 头（把 AS 后面的别名作为列名）
-_CSV_HEADERS = [c.split(" AS ")[-1] if " AS " in c else c.split(".")[-1] for c in _EXPORT_COLUMNS_SQL]
+_EXPORT_COLUMN_KEYS = [c.split(" AS ")[-1] if " AS " in c else c.split(".")[-1] for c in _EXPORT_COLUMNS_SQL]
+
+_EXPORT_HEADER_LABELS = {
+    "sku_code": "Sku",
+    "product_tags": "ProductTags",
+    "adjust": "Adjust",
+    "same_shipping": "SameShipping",
+    "shipping_ave": "ShippingAve",
+    "shipping_ave_m": "MShippingAve",
+    "shipping_ave_r": "RShippingAve",
+    "shipping_med": "ShippingMed",
+    "remote_check": "RemoteCheck",
+    "rural_ave": "RuralAve",
+    "weighted_ave_s": "WeightedAveS",
+    "shipping_med_dif": "ShippingMedDif",
+    "cubic_weight": "CubicWeight",
+    "price_ratio": "PriceRatio",
+    "shipping_type": "ShippingType",
+    "selling_price": "Selling Price",
+    "shopify_price": "Shopify Price",
+    "kogan_au_price": "Kogan AUPrice",
+    "kogan_k1_price": "K1 Price",
+    "kogan_nz_price": "Kogan NZPrice",
+    "weight": "updateWeight",
+    "updated_at": "UpdatedAt",
+}
+
+_CSV_HEADERS = [_EXPORT_HEADER_LABELS.get(key, key) for key in _EXPORT_COLUMN_KEYS]
 
 
 # ============= 原生 SQL + 流式导出 ============= #
@@ -96,12 +122,11 @@ def export_freight_csv_iter_sql(
     keys = rs.keys()
     for row in rs:
         d = dict(zip(keys, row))
-        if isinstance(d.get("product_tags"), (list, dict)):
-            d["product_tags"] = json.dumps(d["product_tags"], ensure_ascii=False)
+        d["product_tags"] = _format_product_tags(d.get("product_tags"))
         updated = d.get("updated_at")
         if isinstance(updated, datetime):
             d["updated_at"] = updated.replace(microsecond=0).isoformat()
-        writer.writerow([d.get(h) for h in _CSV_HEADERS])
+        writer.writerow([d.get(key) for key in _EXPORT_COLUMN_KEYS])
         # 分块 flush，保证长流稳定
         for chunk in _csv_write_flush(buf, flush_bytes):
             yield chunk
@@ -135,16 +160,15 @@ def _build_where_sql_for_export(
                 ph.append(f":{k}")
             conds.append(f"f.shipping_type IN ({','.join(ph)})")
 
-    if tags_csv:
-        tags = [t.strip() for t in tags_csv.split(",") if t.strip()]
-        if tags:
-            ph = []
-            for i, v in enumerate(tags):
-                k = f"tag{i}"
-                params[k] = v
-                ph.append(f":{k}")
-            # JSONB: “任意一个 tag 命中”
-            conds.append(f"COALESCE(si.product_tags, '[]'::jsonb) ?| ARRAY[{','.join(ph)}]")
+    tags = _parse_tags_filter(tags_csv)
+    if tags:
+        ph = []
+        for i, v in enumerate(tags):
+            k = f"tag{i}"
+            params[k] = v
+            ph.append(f":{k}")
+        # JSONB: “任意一个 tag 命中”
+        conds.append(f"COALESCE(si.product_tags, '[]'::jsonb) ?| ARRAY[{','.join(ph)}]")
 
     return " AND ".join(conds), params
 
@@ -156,3 +180,34 @@ def _csv_write_flush(buf: io.StringIO, flush_bytes: int):
     if payload and len(payload) >= flush_bytes:
         yield payload
         buf.seek(0); buf.truncate(0)
+
+
+def _format_product_tags(value):
+    if value is None:
+        return None
+    if isinstance(value, list):
+        tokens = [str(v).strip() for v in value if v is not None and str(v).strip()]
+        return ",".join(tokens)
+    if isinstance(value, dict):
+        return json.dumps(value, ensure_ascii=False)
+    return str(value)
+
+
+def _parse_tags_filter(raw: Optional[str]) -> list[str]:
+    if not raw:
+        return []
+    text = raw.strip()
+    if not text:
+        return []
+    if text.startswith("[") and text.endswith("]"):
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            parsed = None
+        if isinstance(parsed, list):
+            tags = [str(item).strip() for item in parsed if str(item).strip()]
+        else:
+            tags = []
+    else:
+        tags = [item.strip() for item in text.split(",")]
+    return [tag for tag in tags if tag]
