@@ -37,6 +37,7 @@ export default function AppLayout() {
     if (loc.pathname === '/dashboard') return ['/dashboard'];
     if (loc.pathname.startsWith('/products')) return ['/products'];
     if (loc.pathname.startsWith('/sync-runs')) return ['/sync-runs'];
+    if (loc.pathname.startsWith('/sync-chunks')) return ['/sync-chunks'];
     if (loc.pathname.startsWith('/schedules')) return ['/schedules'];
 
     if (loc.pathname.startsWith('/freight-results')) return ['/freight-results'];
@@ -50,7 +51,11 @@ export default function AppLayout() {
 
 
   // 展开态：父菜单使用“非路由”的 key：'PRODUCT_GROUP_KEY' 在 /products 或 /sync-runs 下自动展开
-  const shouldOpenProduct = loc.pathname.startsWith('/products') || loc.pathname.startsWith('/sync-runs');
+  const shouldOpenProduct = (
+    loc.pathname.startsWith('/products') ||
+    loc.pathname.startsWith('/sync-runs') ||
+    loc.pathname.startsWith('/sync-chunks')
+  );
   const shouldOpenDownload = loc.pathname.startsWith('/download');
 
   const [openKeys, setOpenKeys] = useState<string[]>(
@@ -79,7 +84,8 @@ export default function AppLayout() {
       icon: <AppstoreOutlined />,
       children: [
         { key: '/products', label: 'Products List', icon: <DatabaseOutlined />},
-        { key: '/sync-runs', label: 'Product Sync Runs', icon: <DatabaseOutlined /> },
+        { key: '/sync-runs', label: 'Product Runs', icon: <DatabaseOutlined /> },
+        { key: '/sync-chunks', label: 'Product Chunks', icon: <DatabaseOutlined /> },
       ],
     },
     

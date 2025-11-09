@@ -18,6 +18,7 @@ from .freight import router as freight_router
 from .freight_config import router as freight_config_router
 from .kogan_template_download import router as kogan_template_router
 from .product import router as product_router
+from .product_sync_records import router as product_sync_records_router
 from .routes_ops import router as ops_router
 from .scheduler import router as scheduler_router
 from .shopify_bulk_ops import router as shopify_router
@@ -46,6 +47,7 @@ protected.include_router(freight_router)
 protected.include_router(freight_config_router)
 protected.include_router(kogan_template_router)
 protected.include_router(product_router)
+protected.include_router(product_sync_records_router)
 protected.include_router(ops_router)
 protected.include_router(scheduler_router)
 protected.include_router(shopify_router)
