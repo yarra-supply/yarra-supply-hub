@@ -12,6 +12,7 @@ from sqlalchemy import (
     String,
     Text,
     func,
+    Index,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -76,6 +77,19 @@ class KoganExportJob(Base):
         cascade="all, delete-orphan",
     )
 
+    __table_args__ = (
+        Index(
+            "ix_kogan_export_jobs_country_exported",
+            "country_type",
+            "exported_at",
+        ),
+        Index(
+            "ix_kogan_export_jobs_status_updated",
+            "status",
+            "updated_at",
+        ),
+    )
+
 
 class KoganExportJobSku(Base):
     __tablename__ = "kogan_export_job_skus"
@@ -92,3 +106,8 @@ class KoganExportJobSku(Base):
     changed_columns: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
 
     job: Mapped[KoganExportJob] = relationship("KoganExportJob", back_populates="skus")
+
+    __table_args__ = (
+        Index("ix_kogan_export_job_skus_job_sku", "job_id", "sku"),
+        Index("ix_kogan_export_job_skus_changed_cols_gin", "changed_columns", postgresql_using="gin"),
+    )

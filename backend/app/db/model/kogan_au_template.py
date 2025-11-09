@@ -26,8 +26,13 @@ CountryType = SAEnum("AU", "NZ", name="country_type_enum")
     - 金额、重量等采用 Numeric，描述类用 Text，其他默认 String。
 """
 class KoganTemplateAU(Base):
-    
+
     __tablename__ = "kogan_template_au"
+    __table_args__ = (
+        Index("ix_kogan_template_au_sku", "sku"),
+        Index("ux_kogan_template_au_country_sku", "country_type", "sku", unique=True),
+        Index("ix_kogan_template_au_updated", "updated_at"),
+    )
 
     # 通用字段（如已有基类时间戳，可去掉这里的两个字段）
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
@@ -58,12 +63,6 @@ class KoganTemplateAU(Base):
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
-    
-
-    __table_args__ = (
-        Index("ix_kogan_template_au_sku", "sku", unique=False),
-    )
-
 
 """
     表：kogan_template_NZ
@@ -72,6 +71,11 @@ class KoganTemplateAU(Base):
 class KoganTemplateNZ(Base):
 
     __tablename__ = "kogan_template_nz"
+    __table_args__ = (
+        Index("ix_kogan_template_nz_sku", "sku"),
+        Index("ux_kogan_template_nz_country_sku", "country_type", "sku", unique=True),
+        Index("ix_kogan_template_nz_updated", "updated_at"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     sku: Mapped[str] = mapped_column(String(128), index=True, nullable=False)
@@ -87,7 +91,3 @@ class KoganTemplateNZ(Base):
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
-
-    __table_args__ = (
-        Index("ix_kogan_template_nz_sku", "sku", unique=False),
-    )
