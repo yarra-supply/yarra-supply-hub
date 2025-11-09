@@ -17,6 +17,14 @@ export const http = axios.create({
   timeout: 30000,
 });
 
+http.interceptors.request.use((config) => {
+  const isKoganApply = config.url?.includes('/kogan-template/export/') && config.url?.endsWith('/apply');
+  if (isKoganApply) {
+    config.timeout = Math.max(config.timeout ?? 0, 120000);
+  }
+  return config;
+});
+
 
 // 可选：如果未来用“Header JWT”，暴露设置方法
 // export function setAuthToken(token: string | null) {
@@ -28,5 +36,4 @@ export const http = axios.create({
 // }
 
 export default http;
-
 

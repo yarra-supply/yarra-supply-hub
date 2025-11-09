@@ -178,9 +178,21 @@ def apply_kogan_export(
             # applied_by=None,
         )
     except ExportJobNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "code": "job_not_found",
+                "message": str(exc),
+            },
+        ) from exc
     except RuntimeError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "code": "job_apply_invalid_state",
+                "message": str(exc),
+            },
+        ) from exc
 
     applied_at = job.applied_at.isoformat() if job.applied_at else None
     return {

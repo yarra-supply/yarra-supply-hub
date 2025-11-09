@@ -117,7 +117,9 @@ const KoganTemplateDataDownload: React.FC = () => {
       });
     } catch (err: any) {
       console.error(err);
-      message.error(err?.message || `确认 ${country} 导出失败`);
+      const detail = err?.response?.data?.detail;
+      const msg = detail?.message || err?.message || `确认 ${country} 导出失败`;
+      message.error(msg);
     } finally {
       setLoading(country, "apply", false);
     }
