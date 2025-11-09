@@ -5,11 +5,10 @@ from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.api.v1 import api_v1
+from app.core.logging import configure_logging
 
-logging.basicConfig(level=logging.INFO)
-app_logger = logging.getLogger("uvicorn.error")
-logging.getLogger().handlers = app_logger.handlers
-logging.getLogger().setLevel(logging.INFO)
+configure_logging()
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title=settings.PROJECT_NAME)
 

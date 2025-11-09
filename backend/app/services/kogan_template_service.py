@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from app.repository.product_repo import load_products_map
 from app.repository.freight_repo import load_freight_map
 from app.db.model.kogan_export_job import ExportJobStatus, KoganExportJob
+import logging
 from app.repository.kogan_template_repo import (
     apply_kogan_template_updates,
     clear_kogan_dirty_flags,
@@ -24,7 +25,10 @@ from app.repository.kogan_template_repo import (
     mark_job_status,
     KoganTemplateModel,
 )
+from app.core.logging import configure_logging
 
+configure_logging()
+logger = logging.getLogger(__name__)
 
 # batch size 默认常量
 DEFAULT_BATCH_SIZE = 5000
@@ -508,7 +512,7 @@ def _resolve_shipping(country_type: str, freight_row: Optional[Dict[str, object]
         return "0"
     else:
         shipping_type = _get_value(freight_row, "shipping_type")
-        if isinstance(shipping_type, str) and shipping_type.lower() in {"extra3", "extra4", "extra5"}:
+        if isinstance(shipping_type, str) and shipping_type.strip().lower() in {"extra3", "extra4", "extra5"}:
             return "variable"
         return "0"
 
@@ -520,9 +524,8 @@ def _resolve_weight(
 ) -> Optional[object]:
     shipping_type = _get_value(freight_row, "shipping_type")
     freight_weight = _get_value(freight_row, "weight")
-    product_weight = _get_value(product_row, "weight")
 
-    if isinstance(shipping_type, str) and shipping_type.lower() in {"extra3", "extra4", "extra5"}:
+    if isinstance(shipping_type, str) and shipping_type.strip().lower() in {"extra3", "extra4", "extra5"}:
         return freight_weight
     return None
 
@@ -558,8 +561,8 @@ def _resolve_first_price(
 
 def _calculate_nz_first_price(price_decimal: Decimal) -> Decimal:
     if price_decimal > Decimal("66.7"):
-        return (price_decimal * Decimal("0.969")).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
-    return (price_decimal - Decimal("2.01")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        return (price_decimal * Decimal("0.969")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    return price_decimal - Decimal("2.01")
 
 
 

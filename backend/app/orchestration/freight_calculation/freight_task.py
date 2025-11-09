@@ -8,6 +8,7 @@ from celery import shared_task
 from sqlalchemy.orm import Session
 from app.db.session import SessionLocal
 from app.core.config import settings
+from app.core.logging import configure_logging
 
 from app.services.freight.freight_cal_config_loader import load_freight_calc_config
 from app.services.freight.freight_cal_service import process_batch_compute_and_persist
@@ -22,6 +23,7 @@ from app.db.model.product import SkuInfo
 from app.db.model.freight import FreightRun
 
 
+configure_logging()
 logger = logging.getLogger(__name__)
 
 
@@ -36,7 +38,9 @@ BATCH_SIZE = settings.FREIGHT_BATCH_SIZE
  - candidate_skus 若为空：默认只计算“哈希有变化”的 SKU（DB 自检）
 '''
 @shared_task(name="app.orchestration.freight_calculation.freight_task.kick_freight_calc")
-def kick_freight_calc( product_run_id: Optional[str] = None, trigger: str = "manual"):
+def kick_freight_calc(product_run_id: Optional[str] = None, trigger: str = "manual"):
+
+    logger.info("========  kick_freight_calc start product_run_id=%s  ========", product_run_id)
     
     db = SessionLocal()
 
@@ -52,6 +56,7 @@ def kick_freight_calc( product_run_id: Optional[str] = None, trigger: str = "man
     # 把 run_id、product_run_id 传下去
     #freight_calc_run.delay(run_id, product_run_id, [])
     
+    logger.info("======== kick_freight_calc end ========")
     return {"freight_run_id": run_id}
 
 
@@ -127,16 +132,13 @@ def freight_calc_run(
 
             logger.info(
                 "freight_calc_run batch=%d size=%d changed=%d elapsed=%.2fs",
-                (i // BATCH_SIZE) + 1,
-                len(batch),
-                changed,
-                iteration_elapsed,
+                (i // BATCH_SIZE) + 1, len(batch), changed, iteration_elapsed,
             )
             
         total_elapsed = time.perf_counter() - loop_start
         total_batches = (len(target_skus) + BATCH_SIZE - 1) // BATCH_SIZE
         logger.info(
-            "freight_calc_run finished batches=%d total_skus=%d changed_total=%d elapsed=%.2fs",
+            "freight_calc_run all batches finished batches=%d total_skus=%d changed_total=%d elapsed=%.2fs",
             total_batches,
             len(target_skus),
             changed_total,

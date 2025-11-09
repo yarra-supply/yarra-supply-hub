@@ -289,9 +289,7 @@ def compute_shipping_med_dif(
     输出: "0" | "1" | "10" | "20" | "Extra2|3|4|5"
  """
 def compute_shipping_type(
-    shipping_ave: Optional[Decimal], # 没用上 
     same_shipping: Optional[Decimal],
-    shipping_med: Optional[Decimal],
     rural_ave: Optional[Decimal],
     shipping_med_dif: Optional[Decimal],
     remote_check: bool,
@@ -300,14 +298,6 @@ def compute_shipping_type(
     cfg: Optional[Mapping[str, any]] = None,
 ) -> tuple[str, Optional[Decimal]]:
     
-    if same_shipping is None or rural_ave is None:
-        # 兜底：信息不足也要给出分型
-        price_dec = _d(price)
-        price_ratio = None
-        if price_dec and price_dec != 0 and rural_ave is not None:
-            price_ratio = rural_ave / price_dec
-        return "Extra3", price_ratio
-
     price_dec = _d(price)
     price_ratio_limit = _cfgD(cfg, "price_ratio", 0.45)
     price_ratio = None
@@ -332,18 +322,30 @@ def compute_shipping_type(
 
     if rural_ave == Decimal("0"):
         result = "0"
-    elif same_shipping == same_0 and meets_rural_condition:
+    elif same_shipping is not None and same_shipping == same_0 and meets_rural_condition:
         result = "1"
-    elif same_shipping < same_10 and meets_rural_condition and condition_group1:
+    elif (
+        same_shipping is not None and same_shipping < same_10
+        and meets_rural_condition and condition_group1
+    ):
         result = "10"
-    elif same_shipping < same_20 and meets_rural_condition and meets_price_ratio and condition_group2:
+    elif (
+        same_shipping is not None
+        and same_shipping < same_20
+        and meets_rural_condition
+        and meets_price_ratio
+        and condition_group2
+    ):
         result = "20"
-    elif same_shipping < same_30 and meets_rural_condition and meets_price_ratio:
+    elif (
+        same_shipping is not None and same_shipping < same_30
+        and meets_rural_condition and meets_price_ratio
+    ):
         result = "Extra2"
     else:
-        if same_shipping < same_50:
+        if same_shipping is not None and same_shipping < same_50:
             result = "Extra3"
-        elif same_shipping < same_100:
+        elif same_shipping is not None and same_shipping < same_100:
             result = "Extra4"
         else:
             result = "Extra5"
@@ -373,24 +375,6 @@ def compute_cubic_weight(
     if w > (c * factor - headroom):
         return None
     raw_cubic_weight = c * factor
-
-    # if raw_cubic_weight.copy_abs() > _MAX_NUMERIC_14_3:
-    #     sku_ref = sku_code or "<unknown>"
-    #     logger.error(
-    #         "cubic_weight overflow detected: sku=%s cbm=%s weight=%s factor=%s "
-    #         "raw=%s threshold=%s",
-    #         sku_ref,
-    #         c,
-    #         w,
-    #         factor,
-    #         raw_cubic_weight,
-    #         _MAX_NUMERIC_14_3,
-    #     )
-    #     raise ValueError(
-    #         f"cubic_weight exceeds Numeric(14,3) limit ({_MAX_NUMERIC_14_3}) "
-    #         f"for sku={sku_ref}: {raw_cubic_weight}. "
-    #         "Verify sku_info.cbm / cubic_factor or enlarge the DB precision."
-    #     )
 
     # todo check 保留2位小数
     # return _round(raw_cubic_weight, "0.01")
@@ -556,7 +540,9 @@ def compute_k1_price(
     threshold = _cfgD(cfg, "k1_threshold", 66.7)
     multiplier = _cfgD(cfg, "k1_discount_multiplier", 0.969)
     minus = _cfgD(cfg, "k1_otherwise_minus", 2.01)
-    return _round(kogan_au_price * multiplier, "0.01") if kogan_au_price > threshold else _round(kogan_au_price - minus, "0.01")
+    if kogan_au_price > threshold:
+        return _round(kogan_au_price * multiplier, "0.01")
+    return kogan_au_price - Decimal(str(minus))
 
 
 def compute_kogan_nz_price(
@@ -608,8 +594,7 @@ def compute_all(i: FreightInputs,
     cubic_weight = compute_cubic_weight(i.weight, i.cbm, cfg=cfg, sku_code=sku_code)
 
     shipping_type, price_ratio_val = compute_shipping_type(
-        shipping_ave, same_shipping, shipping_med, rural_ave, shipping_med_dif,
-        remote_check, i.price, fr, cfg=cfg
+        same_shipping, rural_ave, shipping_med_dif, remote_check, i.price, fr, cfg=cfg
     )
 
     # 新增：weight（calculate weight）
