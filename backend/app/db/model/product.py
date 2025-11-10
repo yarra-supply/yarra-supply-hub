@@ -26,7 +26,7 @@ class SkuInfo(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
 
     sku_code:           Mapped[str]           = mapped_column(String(255), unique=True, index=True, nullable=False)  # 唯一 SKU
-    shopify_variant_id: Mapped[Optional[str]] = mapped_column(String(255), index=True)  # 来自Shopify变体ID
+    shopify_variant_id: Mapped[Optional[str]] = mapped_column(String(255))  # 来自Shopify变体ID
     
     # 库存和状态
     stock_qty: Mapped[int] = mapped_column(Integer, default=0) 
@@ -81,9 +81,17 @@ class SkuInfo(Base):
     last_changed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)  
 
     __table_args__ = (
-        Index("idx_sku_info_last_changed_at", "last_changed_at"),
+        # 最近变更范围查询 + SKU 排序，用于 list_today_changed_skus
+        Index("idx_sku_info_last_changed_sku", "last_changed_at", "sku_code"),
+        # Shopify variant 反查
         Index("idx_sku_info_variant_id", "shopify_variant_id"),
-        Index("idx_sku_info_special_end", "special_price_end_date"),
+        # 特价回收任务：按结束日期筛选并按 SKU 输出
+        Index("idx_sku_info_special_end_sku", "special_price_end_date", "sku_code"),
+        # 商品列表分页：ORDER BY updated_at DESC, sku_code
+        Index("idx_sku_info_updated_sku", "updated_at", "sku_code"),
+        # SKU 前缀 ILIKE 查询
+        Index("idx_sku_info_lower_sku_code", func.lower(sku_code)),
+        # 产品标签 JSONB 过滤
         Index("gin_sku_info_product_tags", product_tags, postgresql_using="gin"),
     )
 

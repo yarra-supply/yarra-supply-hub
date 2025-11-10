@@ -32,9 +32,11 @@ def _d(val) -> Optional[Decimal]:
     except Exception:
         return None
 
+# todo 所有字段都受影响，check 所有字段
 def _round(val: Optional[Decimal], places: str) -> Optional[Decimal]:
+    """Power Query 公式默认使用 Banker's rounding（HALF_EVEN），保持一致。"""
     if val is None: return None
-    return val.quantize(Decimal(places), rounding=ROUND_HALF_UP)
+    return val.quantize(Decimal(places), rounding=ROUND_HALF_EVEN)
 
 def _avg(values: list[Decimal]) -> Optional[Decimal]:
     vals = [v for v in values if v is not None]

@@ -24,6 +24,11 @@ class Settings(BaseSettings):
     PROJECT_NAME: str = "Yarra Supply Hub"
     ENVIRONMENT: str = "dev"
     API_PREFIX: str = "/api/v1"
+    NEED_UPDATE_K1_SKUS_FILE: Optional[str] = Field(
+        default=None,
+        alias="NEED_UPDATE_K1_SKUS_FILE",
+        description="Override path for need-update K1 SKU list (defaults to backend/data/need_update_k1_skus.txt).",
+    )
 
 
     # ========= 登录 / 鉴权 / CORS =========

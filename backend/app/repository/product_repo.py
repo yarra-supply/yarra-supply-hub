@@ -970,6 +970,7 @@ def load_products_map(db: Session, skus: List[str]) -> Dict[str, Dict[str, objec
             "stock": getattr(r, "stock_qty", None),
             "brand": getattr(r, "brand", None),
             "weight": getattr(r, "weight", None),
+            "product_tags": getattr(r, "product_tags", None),
 
             # "kogan_first_price": getattr(r, "kogan_first_price", None),
             # "handling_days": getattr(r, "handling_days", None),

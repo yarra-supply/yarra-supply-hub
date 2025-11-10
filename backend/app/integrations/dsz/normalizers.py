@@ -33,6 +33,8 @@ def normalize_dsz_product(raw: Dict[str, Any]) -> Dict[str, Any]:
         fallback_keywords = ("unbranded", "does not apply", "na", "genetic")
         if any(keyword in brand_lower for keyword in fallback_keywords):
             brand = ""
+        elif _has_garbled_characters(brand):
+            brand = ""
     if not brand:
         brand = "Yarra Supply"
     out["brand"] = brand
@@ -212,3 +214,14 @@ def _to_float(val, ndigits: Optional[int] = None) -> Optional[float]:
 def _to_int(val) -> Optional[int]:
     f = _to_float(val)
     return int(f) if f is not None else None
+
+
+def _has_garbled_characters(value: str) -> bool:
+    """
+    简单判定品牌名是否含非 ASCII 可打印字符（如 “à” 等乱码）。
+    """
+    for ch in value:
+        code = ord(ch)
+        if code < 32 or code > 126:
+            return True
+    return False

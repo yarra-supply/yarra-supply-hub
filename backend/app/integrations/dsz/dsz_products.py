@@ -14,14 +14,11 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 from app.core.config import settings
 from app.integrations.dsz.errors import DSZPayloadError
 from app.integrations.dsz.http_client import DSZHttpClient
-import json
-from pprint import pprint
 
 logger = logging.getLogger(__name__)
 
 
 
-# -------- 提供给task调用 --------
 def get_products_by_skus(skus: Iterable[str]) -> List[dict]:
     """按传入 SKUs 获取 DSZ 产品列表，仅返回合并后的商品数据。"""
     api = DSZProductsAPI()
@@ -31,19 +28,18 @@ def get_products_by_skus(skus: Iterable[str]) -> List[dict]:
 
 
 """
+提供给task调用
   要产品列表 + 汇总统计（requested/returned/missing/extra）。
 """
 def get_products_by_skus_with_stats(skus: Iterable[str]) -> Tuple[List[dict], Dict[str, Any]]:
     """按传入 SKUs 获取商品数据及统计信息，便于上层分析缺失情况。"""
     api = DSZProductsAPI()
-
-    # todo 构建自己使用的sku结构题，只保留需要的字段？
     return api.fetch_by_skus(skus, return_stats=True)  # type: ignore[return-value]
 
 
 
 """
- 对外暴露：按 SKU 批量获取 zone rates（仅 sku + standard）
+ 提供给task调用：按 SKU 批量获取 zone rates（仅 sku + standard）
     调用 /v2/get_zone_rates，按传入 skus（逗号分隔）获取每个 sku 的 'standard' 区域费率。
     只返回 [{'sku': 'ABC', 'standard': {...}}, ...]
 """
@@ -59,16 +55,12 @@ def get_zone_rates_by_skus(skus: Iterable[str]) -> List[dict]:
         except Exception as e:  # noqa: BLE001
             last_err = e
             if i >= attempts:
-                logger.error(
-                    "get_zone_rates_by_skus failed after %d attempts; err=%s",
-                    i, e
-                )
+                logger.error("get_zone_rates_by_skus failed after %d attempts; err=%s",
+                    i, e)
                 raise
             # 进入重试分支，打 info 便于观测
-            logger.info(
-                "get_zone_rates_by_skus attempt %d/%d failed: %s; retrying in %.1fs",
-                i, attempts, e, backoff
-            )
+            logger.info("get_zone_rates_by_skus attempt %d/%d failed: %s; retrying in %.1fs",
+                i, attempts, e, backoff)
             time.sleep(backoff)
             # 如需指数退避可改为：backoff *= 2
 
@@ -76,6 +68,7 @@ def get_zone_rates_by_skus(skus: Iterable[str]) -> List[dict]:
     if last_err:
         raise last_err
     return []
+
 
 
 
@@ -98,7 +91,7 @@ class DSZProductsAPI:
         self.zone_method = (getattr(settings, "DSZ_ZONE_RATES_METHOD", "POST") or "POST").upper()
     
 
-    # test ✅
+    
     """批量查询 SKUs，支持统计/重试策略，自动去重并记录缺失/多余。"""
     def fetch_by_skus(
         self,
@@ -148,17 +141,6 @@ class DSZProductsAPI:
 
 
 
-    # -------- 单次DSZ接口调用 --------
-    # test ✅
-    def _fetch_one_batch(self, skus: List[str]) -> Any:
-        """调用一次 DSZ /v2/products，处理单批最多 max_per_req 个 SKU。"""
-        params: Dict[str, Any] = {
-            self.sku_param: ",".join(skus),
-            "limit": min(self.max_per_req, max(len(skus), 1)),
-        }
-        return self.http.get_json(self.endpoint, params=params)
-
-
     def _fetch_chunk_items(
         self,
         chunk: List[str],
@@ -176,7 +158,6 @@ class DSZProductsAPI:
                 payload = self._fetch_one_batch(chunk)
                 return self._extract_items(payload)
             except Exception as e:
-                # 没重试啊？
                 if attempt >= per_batch_attempts:
                     if on_error == "raise":
                         raise
@@ -186,9 +167,26 @@ class DSZProductsAPI:
                     )
                     self._record_failed_batch(chunk, stats, collect_failed_detail)
                     return []
+                logger.info(
+                    "DSZ sub-batch attempt %d/%d failed (size=%d, sample=%s). Retrying in %.1fs; err=%s",
+                    attempt, per_batch_attempts, len(chunk), chunk[:5], per_batch_backoff_sec, e,
+                )
                 time.sleep(per_batch_backoff_sec)
 
 
+    # -------- 单次DSZ接口调用 --------
+    def _fetch_one_batch(self, skus: List[str]) -> Any:
+        """调用一次 DSZ /v2/products，处理单批最多 max_per_req 个 SKU。"""
+        params: Dict[str, Any] = {
+            self.sku_param: ",".join(skus),
+            "limit": min(self.max_per_req, max(len(skus), 1)),
+        }
+        return self.http.get_json(self.endpoint, params=params)
+
+
+    '''
+    批量处理返回结果 + missing重试 + 问题record
+    '''
     def _process_chunk_results(
         self,
         *,
@@ -215,7 +213,7 @@ class DSZProductsAPI:
         if missing:
             retry_items = self._retry_missing_skus(list(missing))
             if retry_items:
-                logger.info(
+                logger.warning(
                     "DSZ products missing, retry one time, missing skus: requested=%d missing_before=%d retry_count=%d sample=%s",
                     len(req_set),
                     len(missing),
@@ -315,9 +313,7 @@ class DSZProductsAPI:
             return []
     
 
-
             
-    # test ✅
     # 从复杂 payload 中提取商品列表，并确保最终是 list[dict]，不会改动每个商品的内容
     # 负责把 DSZ 接口返回的原始 JSON 中真正的商品列表提取出来，并确保最终拿到的是 list[dict]
     # 优先支持 DSZ 的 { "result": [...] } 结构；否则回退到常见键并递归查找
@@ -399,60 +395,154 @@ class DSZProductsAPI:
     
 
 
+
     # ----------------- /v2/get_zone_rates -----------------
     """
         调用 /v2/get_zone_rates。
         输入：任意 SKU 列表（自动按 160/批拆分）。
         输出：合并后的 list[{'sku': 'ABC', 'standard': {...}}]
     """
-    def fetch_zone_rates_by_skus(self, skus: Iterable[str]) -> List[dict]:
+    def fetch_zone_rates_by_skus(
+        self,
+        skus: Iterable[str],
+        *,
+        per_batch_attempts: int = 2,
+        per_batch_backoff_sec: float = 0.5,
+    ) -> List[dict]:
         
         all_skus = [s.strip() for s in skus if s and s.strip()]
         if not all_skus:
             return []
         
         # 每批“实际请求大小” = min(DSZ_BATCH_SIZE, 接口硬上限)
-        per_req = settings.DSZ_ZONE_RATES_LIMIT
+        per_req = self.zone_limit
 
         results: List[dict] = []
         seen: set[str] = set()
 
         for chunk in _chunked(all_skus, per_req):
-            body = {"skus": ",".join(chunk), "page_no": 1, "limit": per_req}
+            items = self._fetch_zone_rates_chunk(
+                chunk,
+                per_batch_attempts=per_batch_attempts,
+                per_batch_backoff_sec=per_batch_backoff_sec,
+            )
 
-            # 打印请求入参，便于调试（优先美化 JSON，回退到原对象）
-            # try:
-            #     print("DSZ zone_rates request body:\n" + json.dumps(body, ensure_ascii=False, indent=2, default=str))
-            # except Exception:
-            #     print("DSZ zone_rates request body (fallback):", body)
+            returned = self._merge_zone_rates_items(items, results, seen)
+            req_set = set(chunk)
+            missing = req_set - returned
 
-            payload = self.http.post_json(self.zone_endpoint, json_body=body) 
-
-            # 解析 items
-            items = self._extract_zone_rates_items(payload)
-            # print(f"DSZ zone_rates items size={len(items)}")
-
-            returned = {str((it or {}).get("sku") or "").strip() for it in items if isinstance(it, dict)}
-            returned.discard("")
-            if len(returned) < len(chunk):
-                missing = [sku for sku in chunk if sku not in returned]
-                logger.warning(
-                    "DSZ zone_rates mismatch: requested=%d returned=%d missing=%d sample_missing=%s",
-                    len(chunk), len(returned), len(missing), missing[:5],
+            if missing:
+                retry_items = self._retry_zone_rates_missing_skus(
+                    list(missing),
+                    per_batch_attempts=per_batch_attempts,
+                    per_batch_backoff_sec=per_batch_backoff_sec,
                 )
+                if retry_items:
+                    logger.info(
+                        "DSZ zone_rates missing retry succeeded: requested=%d missing_before=%d retry_count=%d sample=%s",
+                        len(req_set),
+                        len(missing),
+                        len(retry_items),
+                        list(sorted(missing))[:10],
+                    )
+                    returned |= self._merge_zone_rates_items(retry_items, results, seen)
+                    missing = req_set - returned
 
-            for it in items:
-                sku = (it.get("sku") or "").strip()
-                if not sku:
-                    continue
-                # 只要 sku + standard
-                obj = {"sku": sku, "standard": it.get("standard")}
-                if sku not in seen:
-                    results.append(obj)
-                    seen.add(sku)
+            if missing:
+                logger.error(
+                    "DSZ zone_rates still missing after retry: requested=%d returned=%d missing=%d sample_missing=%s",
+                    len(req_set),
+                    len(returned),
+                    len(missing),
+                    list(sorted(missing))[:5],
+                )
 
         return results
     
+
+
+    '''
+    批量查询dsz zone api
+    '''
+    def _fetch_zone_rates_chunk(
+        self,
+        chunk: List[str],
+        *,
+        per_batch_attempts: int,
+        per_batch_backoff_sec: float,
+        on_error: str = "skip",
+    ) -> List[dict]:
+        attempt = 0
+        while True:
+            attempt += 1
+            try:
+                payload = self._request_zone_rates_chunk(chunk)
+                return self._extract_zone_rates_items(payload)
+            except Exception as exc:  # noqa: BLE001
+                if attempt >= per_batch_attempts:
+                    if on_error == "raise":
+                        raise
+                    logger.error(
+                        "DSZ zone_rates sub-batch failed after %d attempts; skip. size=%d; sample=%s; err=%s",
+                        attempt, len(chunk), chunk[:5], exc, )
+                    return []
+                logger.info(
+                    "DSZ zone_rates attempt %d/%d failed (size=%d, sample=%s). Retrying in %.1fs; err=%s",
+                    attempt, per_batch_attempts, len(chunk), chunk[:5], per_batch_backoff_sec, exc,)
+                time.sleep(per_batch_backoff_sec)
+
+
+    def _merge_zone_rates_items(
+        self,
+        items: List[dict],
+        results: List[dict],
+        seen: set[str],
+    ) -> set[str]:
+        returned: set[str] = set()
+        for it in items:
+            sku = (it.get("sku") or "").strip() if isinstance(it, dict) else ""
+            if not sku:
+                continue
+            returned.add(sku)
+            obj = {"sku": sku, "standard": it.get("standard")}
+            if sku not in seen:
+                results.append(obj)
+                seen.add(sku)
+        return returned
+
+
+    def _retry_zone_rates_missing_skus(
+        self,
+        missing_skus: List[str],
+        *,
+        per_batch_attempts: int,
+        per_batch_backoff_sec: float,
+    ) -> List[dict]:
+        if not missing_skus:
+            return []
+        # 还是批量接口
+        items = self._fetch_zone_rates_chunk(
+            missing_skus,
+            per_batch_attempts=per_batch_attempts,
+            per_batch_backoff_sec=per_batch_backoff_sec,
+        )
+        if not items:
+            logger.warning(
+                "DSZ zone_rates missing retry failed: count=%d sample=%s",
+                len(missing_skus),
+                missing_skus[:5],
+            )
+        return items
+    
+
+
+    def _request_zone_rates_chunk(self, chunk: List[str]) -> Any:
+        """构造 zone rates 请求并调用 DSZ API。"""
+        limit = min(self.zone_limit, max(len(chunk), 1))
+        payload = {"skus": ",".join(chunk), "page_no": 1, "limit": limit}
+        return self.http.post_json(self.zone_endpoint, json_body=payload)
+
+
 
     
     def _extract_zone_rates_items(self, payload: Any) -> List[dict]:

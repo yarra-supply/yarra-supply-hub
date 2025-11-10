@@ -1,11 +1,13 @@
 
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence, Set
 from datetime import datetime, timezone
 from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
 import csv
 import io
+import os
+from pathlib import Path
 
 
 from sqlalchemy.orm import Session
@@ -34,6 +36,11 @@ logger = logging.getLogger(__name__)
 DEFAULT_BATCH_SIZE = 5000
 MIN_BATCH_SIZE = 1000
 MAX_BATCH_SIZE = 10000
+NEED_UPDATE_K1_SKUS_FILE_ENV = "NEED_UPDATE_K1_SKUS_FILE"
+DEFAULT_NEED_UPDATE_K1_SKUS_FILE = (
+    Path(__file__).resolve().parents[2] / "data" / "need_update_k1_skus.txt"
+)
+_NEED_UPDATE_K1_SKUS_CACHE: Optional[Set[str]] = None
 
 def _resolve_batch_size() -> int:
     size = DEFAULT_BATCH_SIZE
@@ -42,6 +49,38 @@ def _resolve_batch_size() -> int:
     if size > MAX_BATCH_SIZE:
         size = MAX_BATCH_SIZE
     return size
+
+
+def _get_need_update_k1_file_path() -> Path:
+    configured_path = os.getenv(NEED_UPDATE_K1_SKUS_FILE_ENV)
+    if configured_path:
+        return Path(configured_path).expanduser()
+    return DEFAULT_NEED_UPDATE_K1_SKUS_FILE
+
+
+def _load_need_update_k1_skus() -> Set[str]:
+    global _NEED_UPDATE_K1_SKUS_CACHE
+    if _NEED_UPDATE_K1_SKUS_CACHE is not None:
+        return _NEED_UPDATE_K1_SKUS_CACHE
+
+    path = _get_need_update_k1_file_path()
+    skus: Set[str] = set()
+    if not path.exists():
+        logger.debug("Need-update K1 SKU file not found at %s; skipping override.", path)
+        _NEED_UPDATE_K1_SKUS_CACHE = skus
+        return skus
+
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                sku = line.strip()
+                if sku:
+                    skus.add(sku)
+    except OSError as exc:
+        logger.warning("Failed to read K1 override SKU file %s: %s", path, exc)
+
+    _NEED_UPDATE_K1_SKUS_CACHE = skus
+    return skus
 
 
 @dataclass(frozen=True)
@@ -124,6 +163,28 @@ def _has_non_key_diff(sparse: Dict[str, object], columns: Sequence[ColumnSpec]) 
     """若 sparse 里包含任意一个非 always_include 列，视为存在真正变更（可导出）。"""
     for col in columns:
         if not col.always_include and col.logical_key in sparse:
+            return True
+    return False
+
+
+def _has_product_tag(tags: Optional[object], target: str) -> bool:
+    """判断 product_tags 是否包含指定标签（大小写不敏感）。"""
+    if not tags or not target:
+        return False
+    target_norm = target.strip().lower()
+    if not target_norm:
+        return False
+
+    values: List[str]
+    if isinstance(tags, str):
+        values = [tags]
+    elif isinstance(tags, (list, tuple, set)):
+        values = [str(t) for t in tags if t is not None]
+    else:
+        return False
+
+    for val in values:
+        if isinstance(val, str) and val.strip().lower() == target_norm:
             return True
     return False
 
@@ -231,6 +292,9 @@ def _build_export_dataset(
     all_skus: List[str] = []
     row_count = 0
 
+    # 获取历史上必须更新k1 price的sku list
+    need_update_k1_skus: Set[str] = _load_need_update_k1_skus()
+
     batch_size = _resolve_batch_size()
     for skus in iter_changed_skus(db=db, country_type=country_type, batch_size=batch_size):
         if not skus:
@@ -246,15 +310,22 @@ def _build_export_dataset(
         baseline_map = load_kogan_baseline_map(db, country_type, skus)
 
         for sku in skus:
+            product_row = product_map.get(sku, {})
+
+            if country_type == "NZ" and not _has_product_tag(product_row.get("product_tags"), "Kogan NZ"):
+                continue
+
+            force_first_price = sku in need_update_k1_skus
 
             # 4 - build full csv row
             csv_full = _map_to_kogan_csv_row(
                 country_type=country_type,
                 sku=sku,
                 column_specs=column_specs,
-                product_row=product_map.get(sku, {}),
+                product_row=product_row,
                 freight_row=freight_map.get(sku, {}),
                 baseline_row=baseline_map.get(sku),
+                force_first_price=force_first_price,
             )
 
             # 5 - diff against baseline
@@ -432,6 +503,7 @@ def _map_to_kogan_csv_row(
     freight_row: Dict[str, object],
     *,
     baseline_row: Optional[KoganTemplateModel],
+    force_first_price: bool = False,
 ) -> Dict[str, object]:
    
     price_val = _resolve_price(country_type, product_row, freight_row)
@@ -444,7 +516,10 @@ def _map_to_kogan_csv_row(
 
     # 修改template k1 price
     if price_val is not None and price_val > Decimal("67"):
+        logger.info("Kogan first price cleared for SKU %s (country=%s): price=%s > 67 and force_first_price=%s",
+        sku, country_type, price_val, force_first_price,)
         kogan_first_price_val = None
+
 
     row = {
         "SKU": sku,

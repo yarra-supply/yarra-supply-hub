@@ -214,7 +214,7 @@
 
 #     from app.integrations.dsz import dsz_products
 
-#     skus = _sample_skus()
+#     skus = _sample_skus1()
 #     if not skus:
 #         pytest.skip("Provide TEST_DSZ_SKU or TEST_DSZ_SKUS to run this test.")
 
@@ -231,6 +231,11 @@
     
 #     assert isinstance(result1, list), "Zone rate response should be a list"
 #     assert isinstance(result2, list), "Zone rate response should be a list"
+
+
+
+# def _sample_skus1() -> list[str]:
+#     return ["V1026-KLCHH24083WH","V1026-KLCHH24273","V1026-KLCHH24083WH-1"]
 
 
 
