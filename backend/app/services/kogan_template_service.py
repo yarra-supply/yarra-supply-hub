@@ -510,6 +510,11 @@ def _map_to_kogan_csv_row(
     shipping_val = _resolve_shipping(country_type, freight_row)
     weight_val = _resolve_weight(product_row, freight_row)
 
+   
+
+
+
+
     rrp_val = _resolve_rrp_price(country_type, price_val, product_row, freight_row)
 
     kogan_first_price_val = _resolve_first_price(country_type, price_val, product_row, freight_row)
@@ -598,10 +603,33 @@ def _resolve_weight(
     freight_row: Optional[Dict[str, object]],
 ) -> Optional[object]:
     shipping_type = _get_value(freight_row, "shipping_type")
-    freight_weight = _get_value(freight_row, "weight")
+    freight_weight_raw = _get_value(freight_row, "weight")
+    product_weight_raw = _get_value(product_row, "weight")
 
     if isinstance(shipping_type, str) and shipping_type.strip().lower() in {"extra3", "extra4", "extra5"}:
-        return freight_weight
+        freight_weight = _to_decimal(freight_weight_raw)
+        product_weight = _to_decimal(product_weight_raw)
+
+        # IFERROR wrapper：任何计算异常或缺失都返回空字符串
+        if freight_weight is None or product_weight is None or product_weight == 0:
+            return ""
+
+        # IF 逻辑：freight_weight < 5 或两者相差不到 10% 都返回空字符串
+        if freight_weight < Decimal("5"):
+            return ""
+
+        try:
+            relative_gap = (product_weight - freight_weight) / product_weight
+        except (InvalidOperation, ZeroDivisionError):
+            return ""
+
+        if abs(relative_gap) < Decimal("0.1"):
+            return ""
+
+        try:
+            return freight_weight.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+        except InvalidOperation:
+            return ""
     return None
 
 

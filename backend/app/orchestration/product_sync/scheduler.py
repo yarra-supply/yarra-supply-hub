@@ -121,11 +121,12 @@ def schedule_chunks_streaming(
                 from app.orchestration.product_sync.product_sync_task import process_chunk
                 inline_results.append(process_chunk.run(run_id, chunk_idx, sku_entries, False))
             else:
+                # 这里仅仅“组装”了 sig 并 append 到 sigs 列表，没有立刻发送。真正提交到 Celery 是循环结束后
                 sig = signature(process_task_name).s(run_id, chunk_idx, sku_entries, False).set(task_id=task_id)
                 sigs.append(sig)
 
-        # 测试阶段：仅同步 TEST_SKUS 中的变体
-        # source_iter = iter_variant_from_bulk_head(url, target_skus=TEST_SKUS)
+
+        # source_iter = iter_variant_from_bulk_head(url, target_skus=TEST_SKUS)  # 测试阶段：仅同步 TEST_SKUS 中的变体
         source_iter = iter_variant_from_bulk(url)
 
         for item in source_iter:
@@ -160,7 +161,6 @@ def schedule_chunks_streaming(
 
     # 若“单个巨大 chord”不稳定/易失败，则把 header 拆分为多个“小 chord”，
     # 每个小 chord 的回调先聚合子结果；再用一个“外层 chord”统一收口并扁平化后交给 finalize_run。 这样可以显著降低后端对单个 chord 的压力，提升成功率。
-    # todo 什么意思？
     if len(sigs) <= max(1, CHORD_SPLIT_AT):
         logger.info(
             "schedule_chunks_streaming end run=%s chunks=%s mode=single-chord",

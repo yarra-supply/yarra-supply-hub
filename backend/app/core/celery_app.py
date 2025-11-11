@@ -80,16 +80,18 @@ celery 路由规则 - 就像“转发规则”：
 '''
 celery_app.conf.task_routes = {
     # 定时调度任务
-    "app.orchestrator.scheduler_tick.tick_product_full_sync": {"queue": "orchestrator"},
-    "app.orchestrator.scheduler_tick.tick_price_reset": {"queue": "orchestrator"},
+    "app.orchestration.scheduler_tick.tick_product_full_sync": {"queue": "orchestrator"},
+    "app.orchestration.scheduler_tick.tick_price_reset": {"queue": "orchestrator"},
 
     # 周三价格回滚
     "app.orchestrator.price_reset.kick_price_reset": {"queue": "orchestrator"},
 
     # 商品同步编排相关任务
-    "app.orchestrator.product_sync.sync_start_full": {"queue": "orchestrator"},
-    "app.orchestrator.product_sync.handle_bulk_finish": {"queue": "orchestrator"},
-    "app.orchestrator.product_sync.poll_bulk_until_ready": {"queue": "orchestrator"},
+    "app.orchestration.product_sync_task.sync_start_full": {"queue": "orchestrator"},
+    "app.orchestration.product_sync_task.poll_bulk_until_ready": {"queue": "orchestrator"},
+    "app.orchestration.product_sync_task.handle_bulk_finish": {"queue": "orchestrator"},
+    
+
     #todo 其他2个要写吗？
     "app.orchestrator.product_sync.bulk_url_sweeper": {"queue": "orchestrator"},
 

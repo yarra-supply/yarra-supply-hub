@@ -80,7 +80,7 @@ def tick_product_full_sync():
                 return {"status": "already-fired-in-window"}
 
         # 8) 触发入口: 投递异步任务，不阻塞当前 tick
-        # sync_start_full.delay()
+        sync_start_full.delay()
 
         # 9) 更新 last_run_at（UTC）
         db.execute(
@@ -157,7 +157,7 @@ def tick_price_reset():
                 return {"status": "already-fired-in-window"}
 
         # 8) 触发价格还原入口: 投递异步任务，不阻塞当前 tick
-        # kick_price_reset.delay()
+        kick_price_reset.delay()
 
         # 9) 更新 last_run_at（UTC 带时区）
         db.execute(

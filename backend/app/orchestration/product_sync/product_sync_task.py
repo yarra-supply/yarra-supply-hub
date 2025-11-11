@@ -49,7 +49,7 @@ _shopify = ShopifyClient()  # 单实例即可
   调试开关：True 时所有子任务在当前进程内同步执行。
 """
 def _inline_tasks_enabled() -> bool:
-    return True
+    return False
 
 
 
@@ -158,12 +158,14 @@ def poll_bulk_until_ready_inline(
 
 
 
-
+"""
+真实流程入口：串行执行轮询流程，直到成功或超过最大尝试次数。
+"""
 @shared_task(
-    name="app.tasks.product_full_sync.poll_bulk_until_ready",
-    bind=True, max_retries= 40, default_retry_delay= 60
-    # 最多 40 次，每次间隔 60s → 最长约 40 分钟（指数退避）实际测试 3min
+    name="app.orchestration.product_sync_task.poll_bulk_until_ready",
+    bind=True, max_retries= 30, default_retry_delay= 60  # 最多30次，每次间隔60s → 最长约 30 分钟（指数退避）实际测试 3min
 )
+# todo test retry
 def poll_bulk_until_ready(self, run_id: str):
 
     attempt = getattr(self.request, "retries", 0)
@@ -253,6 +255,13 @@ def _poll_bulk_until_ready_step(
         db.close()
 
 
+"""
+与 Celery 任务保持一致的指数退避延迟计算。
+"""
+def _poll_retry_delay(attempt: int, default_retry_delay: int = 60) -> int:
+    delay = int(default_retry_delay * (1.2 ** max(0, attempt)))
+    return min(60, max(1, delay))
+
 
 
 """
@@ -261,9 +270,11 @@ def _poll_bulk_until_ready_step(
 def _dispatch_handle_bulk_finish(
     bulk_id: str, url: str, root_object_count: Any | None, *, inline: bool
 ):
+    # 测试模式-同步触发
     if inline or _inline_tasks_enabled():
         return handle_bulk_finish_inline(bulk_id, url, root_object_count)
-
+    
+    # 真实流程-celery任务异步触发
     handle_bulk_finish.apply_async(
         args=[bulk_id, url, root_object_count], task_id=f"finish:{bulk_id}"
     )
@@ -271,15 +282,10 @@ def _dispatch_handle_bulk_finish(
 
 
 
-"""
-   与 Celery 任务保持一致的指数退避延迟计算。
-"""
-def _poll_retry_delay(attempt: int, default_retry_delay: int = 60) -> int:
-    delay = int(default_retry_delay * (1.2 ** max(0, attempt)))
-    return min(60, max(1, delay))
 
-
-
+'''
+  最终处理 Shopify 返回 URL、调度分片的 Celery 任务
+'''
 @shared_task(
     name="app.orchestration.product_sync_task.handle_bulk_finish",
     bind=True,
