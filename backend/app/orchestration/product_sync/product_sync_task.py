@@ -23,14 +23,16 @@ from app.integrations.dsz import (
 )
 from app.integrations.shopify.payload_utils import normalize_sku_payload
 from app.repository.product_repo import (
-    load_existing_by_skus, diff_snapshot, bulk_upsert_sku_info_2, save_candidates,
+    load_existing_by_skus, bulk_upsert_sku_info, save_candidates,
     load_variant_ids_by_skus, mark_chunk_running, mark_chunk_succeeded, mark_chunk_failed,
     collect_shopify_skus_for_run, purge_sku_info_absent_from,
 )
 from app.orchestration.product_sync.scheduler import schedule_chunks_streaming
 from app.orchestration.product_sync.chunk_enricher import enrich_shopify_snapshot
+from app.orchestration.product_sync.utils import diff_snapshot, build_candidate_rows
 from app.orchestration.freight_calculation.freight_task import kick_freight_calc
 from sqlalchemy.sql.elements import BindParameter, ClauseElement
+from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import QueryableAttribute
 
 # 可选 Redis 锁
@@ -49,7 +51,7 @@ _shopify = ShopifyClient()  # 单实例即可
   调试开关：True 时所有子任务在当前进程内同步执行。
 """
 def _inline_tasks_enabled() -> bool:
-    return False
+    return bool(getattr(settings, "SYNC_TASKS_INLINE", True))
 
 
 
@@ -275,8 +277,8 @@ def _dispatch_handle_bulk_finish(
         return handle_bulk_finish_inline(bulk_id, url, root_object_count)
     
     # 真实流程-celery任务异步触发
-    handle_bulk_finish.apply_async(
-        args=[bulk_id, url, root_object_count], task_id=f"finish:{bulk_id}"
+    handle_bulk_finish.apply_async(args=[bulk_id, url, root_object_count],
+        task_id=f"finish:{bulk_id}", retry=False,
     )
     return "handle_bulk_finish dispatched"
 
@@ -289,7 +291,7 @@ def _dispatch_handle_bulk_finish(
 @shared_task(
     name="app.orchestration.product_sync_task.handle_bulk_finish",
     bind=True,
-    max_retries=5,
+    max_retries=0,
     default_retry_delay=15,
     retry_backoff=True,
     acks_late=True,
@@ -388,172 +390,46 @@ def process_chunk(run_id: str, chunk_idx: int,
 ):
     
     logger.info("process_chunk start run=%s idx=%s size=%s", run_id, chunk_idx, len(sku_codes))
-    
     # === 全函数计时开始 ===
     _t_all_start = time.perf_counter()
-
     db = SessionLocal()
     # 这两个变量用于异常情况下也能打印
     _t_upsert_s = None
     _t_candidates_s = None
+    stats: dict[str, Any] = {}
+    changed_rows: list[dict] = []
+    candidate_tuples: list[tuple[str, dict]] = []
 
     try:
-        try:
-            mark_chunk_running(db, run_id, chunk_idx)    # 标记 manifest：product_sync_chunks running
-            db.commit()
-        except Exception:
-            db.rollback()
+        _mark_chunk_running_safe(db, run_id, chunk_idx)
         
-        # parse sku, price, variant id, product tags
+        # parse sku, price, variant id, product tags from shopify data
         skus, chunk_data_map = normalize_sku_payload(sku_codes)
 
         # 有些分片可能确实是空片, 把“空分片”视为成功: 没有要处理的数据 == 已经处理完
         if not skus:
-            mark_chunk_succeeded(db, run_id, chunk_idx, stats={
-                "missing_count":0,"failed_batches_count":0,"failed_skus_count":0,
-                "requested_total":0,"returned_total":0,
-                "missing_sku_list": [], "failed_sku_list": [], "extra_sku_list": [] 
-            })  
-            db.commit()
-            # === 总耗时打印 ===
-            _t_all_s = time.perf_counter() - _t_all_start
-            print(f"[TIMER] process_chunk run={run_id} idx={chunk_idx} total={_t_all_s:.3f} s (empty chunk)", flush=True)
-            
-            return {
-                "changed": 0, "candidates": [], "missing_count": 0, "extra_count": 0,
-                "failed_batches_count": 0, "failed_skus_count": 0, "requested_total": 0, 
-                "returned_total": 0,
-            }
+            return _handle_empty_chunk(db, run_id, chunk_idx, _t_all_start)
         
         # 1) 从 DB 批量读取旧快照 & 变体ID映射
-        old_map = load_existing_by_skus(db, skus)
-        vid_map = load_variant_ids_by_skus(db, skus)
-        for sku, payload in chunk_data_map.items():
-            variant_id = payload.get("shopify_variant_id")
-            if variant_id:
-                vid_map[sku] = variant_id
+        old_map, vid_map = _prepare_existing_context(db, skus, chunk_data_map)
 
-        # 2) 调 DSZ（内部：≤50/批 + 强重试 + 一致性告警）把失败的 sku 列表（无法返回/子批失败）返回
-        items, stats = get_products_by_skus_with_stats(skus)
+        # 2) 调 DSZ + 区域运费，产出标准化原始数据
+        items, stats, zone_map = _fetch_remote_snapshots(skus)
 
-        # 3) 增加查询dsz的新接口获取sku的运费数据 /v2/get_zone_rates（仅 sku + standard）
-        zone_list = get_zone_rates_by_skus(skus)
-        zone_map: dict[str, dict] = {}
-        for z in zone_list or []:
-            if isinstance(z, dict):
-                s = str(z.get("sku") or "").strip()
-                std = z.get("standard")
-                if s and isinstance(std, dict):
-                    zone_map[s] = std
+        # 3) 根据dsz数据+shopify数据: 标准化 + 计算 attrs_hash_current
+        normed = _normalize_snapshots(items, zone_map, vid_map, chunk_data_map)
 
-        
-        # 明细限长，防止单片过大（默认 500；可用 settings 配置）
-        MAX_LIST = int(getattr(settings, "DSZ_DETAIL_LIST_MAX_PER_CHUNK", 500))  
-        for key in ("missing_sku_list", "failed_sku_list", "extra_sku_list"): 
-            if key in stats and isinstance(stats[key], list):
-                stats[key] = stats[key][:MAX_LIST]         
-            else:
-                stats[key] = []   
+        # 4) 依赖dsz返回数据: 逐 SKU 做 diff，收集需要 upsert 的行和候选字段
+        changed_rows, candidate_tuples = _collect_chunk_changes(normed, old_map, run_id, chunk_idx)
 
-        # 3) 把 DSZ 原始结构转换成系统内部统一的数据结构 + 拼接 attrsHash + 变体映射 
-        normed: list[dict] = []
-        for raw in items:
-            sku_raw = str((raw or {}).get("sku") or "").strip()  
-            std = zone_map.get(sku_raw)  
-            raw_for_norm = dict(raw) if isinstance(raw, dict) else {} 
-            if std:  # 注入给 normalizer
-                raw_for_norm["_zone_standard"] = std
-                
-            # a. dsz + shopify 归一化内部字段
-            n = normalize_dsz_product(raw_for_norm)
-
-            # b. 补充 shopify 侧的增量字段
-            sku = n.get("sku_code")
-            if sku:
-                enrich_shopify_snapshot(n, sku, vid_map, chunk_data_map)
-
-            # c. 计算属性哈希 —— 只使用 FREIGHT_HASH_FIELDS 中的入参字段, 这是“运费敏感字段哈希”的唯一落库点：存入 SkuInfo.attrs_hash_current
-            n["attrs_hash_current"] = calc_attrs_hash_current(n)
-
-            normed.append(n)
-
-
-        # 4) 逐 SKU 做 diff，收集“需要更新”的变更
-        changed_rows: list[dict] = []                   # 真正需要 upsert 到 DB 的完整记录集合
-        candidate_tuples: list[tuple[str, dict]] = []   # 作为“候选变更”的轻量集合，用来喂给候选表，供后续流程（例如运费计算
-        
-        for n in normed:
-            sku = n["sku_code"]
-            _assert_plain_snapshot_values(n, run_id, chunk_idx)
-            old = old_map.get(sku)      # 找到旧记录
-
-            # 1-算差异: 返回变化字段名集合或 {字段名: 新值} 的子集, 新增：也会被视为“有差异”, 无变化：返回空/None
-            # changed_fields 是所有值不相等的字段名加入集合返回, 只有部分字段⚠️
-            changed_fields = diff_snapshot(old, n)   
-            
-            if changed_fields:
-                changed_rows.append(n)     # 但是这里append是完整记录，加入 upsert 列表 ⚠️
-
-                # 2-从n提炼出变更字段的子集，加入候选列表 ⚠️                            
-                new_partial = {k: n.get(k) for k in changed_fields} 
-
-                # 3-记录成 (sku, 变更字段子集)，写入候选池
-                candidate_tuples.append((sku, new_partial)) 
-
-
-        # 5) upsert & 保存候选 一次事务提交，出错回滚
-        if changed_rows or candidate_tuples:
-            try:
-                # ⚠️ 改用candidate_tuples 更新
-                if candidate_tuples:
-                    _t0 = time.perf_counter()
-                    bulk_upsert_sku_info_2(db, candidate_tuples)
-                    _t_upsert_s = time.perf_counter() - _t0
-                    print(
-                        f"[TIMER] process_chunk run={run_id} idx={chunk_idx} bulk_upsert_sku_info_2 rows={len(candidate_tuples)} time={_t_upsert_s:.3f} s",
-                        flush=True,
-                    )
-                
-                if candidate_tuples:
-                    _t1 = time.perf_counter()
-                    save_candidates(db, run_id, candidate_tuples)
-                    _t_candidates_s = time.perf_counter() - _t1
-                    print(f"[TIMER] process_chunk run={run_id} idx={chunk_idx} save_candidates rows={len(candidate_tuples)} time={_t_candidates_s:.3f} s", flush=True)
-
-                db.commit()
-            except Exception as exc:
-                db.rollback()
-                logger.exception(
-                    "failed to persist chunk changes: run=%s idx=%s rows=%d candidates=%d",
-                    run_id,
-                    chunk_idx,
-                    len(changed_rows),
-                    len(candidate_tuples),
-                )
-                raise
-
-        # 6) 成功回写 manifest 指标
-        try:
-            mark_chunk_succeeded(db, run_id, chunk_idx, stats)
-            db.commit()
-        except Exception:
-            db.rollback()
-
-        logger.info(
-            "chunk summary: run=%s idx=%s requested=%d returned=%d missing=%d missing_list=%d "
-            "failed_batches=%d failed_skus=%d failed_sku_list=%d extra=%d extra_list=%d",
-            run_id,
-            chunk_idx,
-            int(stats.get("requested_total", 0) or 0),
-            int(stats.get("returned_total", 0) or 0),
-            int(stats.get("missing_count", 0) or 0),
-            len(stats.get("missing_sku_list", []) or []),
-            int(stats.get("failed_batches_count", 0) or 0),
-            int(stats.get("failed_skus_count", 0) or 0),
-            len(stats.get("failed_sku_list", []) or []),
-            int(stats.get("extra_count", 0) or 0),
-            len(stats.get("extra_sku_list", []) or []),
+        # 5) Upsert & 保存候选: changed_rows 和  changed_rows 字段可以完全对上
+        _t_upsert_s, _t_candidates_s = _persist_chunk_changes(
+            db, run_id, chunk_idx, changed_rows, candidate_tuples
         )
+
+        # 6) 成功回写 manifest 指标并输出摘要
+        _mark_chunk_success(db, run_id, chunk_idx, stats)
+        _log_chunk_summary(run_id, chunk_idx, stats)
 
         # === 总耗时打印 ===
         _t_all_s = time.perf_counter() - _t_all_start
@@ -604,6 +480,7 @@ def process_chunk(run_id: str, chunk_idx: int,
     finally:
         db.close()
         logger.info("process_chunk end idx=%s size=%s", chunk_idx, len(sku_codes))
+
 
 
 
@@ -711,17 +588,17 @@ def finalize_run(results, run_id: str):
 
     # 触发运费计算（优先候选）:是在 finalize_run（chord 回调）里触发一次，而不是在每个 process_chunk 里触发。
     # 所有切片 → 1 次 finalize_run → 1 次 触发运费
-    # try:
-    #     if _inline_tasks_enabled():
-    #         kick_freight_calc.run(
-    #             product_run_id=str(run_id), trigger="product-sync-trigger"
-    #         )
-    #     else:
-    #         kick_freight_calc.delay(
-    #             product_run_id=str(run_id), trigger="product-sync-trigger"
-    #         )
-    # except Exception:
-    #     pass
+    try:
+        if _inline_tasks_enabled():
+            kick_freight_calc.run(
+                product_run_id=str(run_id), trigger="product-sync-trigger"
+            )
+        else:
+            kick_freight_calc.delay(
+                product_run_id=str(run_id), trigger="product-sync-trigger"
+            )
+    except Exception:
+        pass
 
     return {"run_id": run_id, "candidate_skus": len(sku_set)}
 
@@ -878,6 +755,216 @@ def _maybe_alert_dsz_health(*, run_id: str, missing_sum: int, failed_batches: in
             f"failed_batches={failed_batches}, failed_skus={failed_skus}"
         )
 
+
+
+# === chunk helpers ===
+def _mark_chunk_running_safe(db: Session, run_id: str, chunk_idx: int) -> None:
+    try:
+        mark_chunk_running(db, run_id, chunk_idx)
+        db.commit()
+    except Exception:
+        db.rollback()
+
+
+def _handle_empty_chunk(db, run_id: str, chunk_idx: int, start_ts: float) -> dict:
+    stats = {
+        "missing_count": 0,
+        "failed_batches_count": 0,
+        "failed_skus_count": 0,
+        "requested_total": 0,
+        "returned_total": 0,
+        "extra_count": 0,
+        "missing_sku_list": [],
+        "failed_sku_list": [],
+        "extra_sku_list": [],
+    }
+    _mark_chunk_success(db, run_id, chunk_idx, stats)
+    _log_chunk_summary(run_id, chunk_idx, stats)
+    total = time.perf_counter() - start_ts
+    print(
+        f"[TIMER] process_chunk run={run_id} idx={chunk_idx} total={total:.3f} s (empty chunk)",
+        flush=True,
+    )
+    return {
+        "changed": 0,
+        "candidates": [],
+        "missing_count": 0,
+        "extra_count": 0,
+        "failed_batches_count": 0,
+        "failed_skus_count": 0,
+        "requested_total": 0,
+        "returned_total": 0,
+    }
+
+
+def _prepare_existing_context(db, skus: list[str], chunk_data_map: dict[str, dict]) -> tuple[dict, dict]:
+    old_map = load_existing_by_skus(db, skus)
+    vid_map = load_variant_ids_by_skus(db, skus)
+    for sku, payload in chunk_data_map.items():
+        variant_id = payload.get("shopify_variant_id")
+        if variant_id:
+            vid_map[sku] = variant_id
+    return old_map, vid_map
+
+
+def _fetch_remote_snapshots(skus: list[str]) -> tuple[list[dict], dict[str, Any], dict[str, dict]]:
+    items, stats = get_products_by_skus_with_stats(skus)
+    zone_map = _build_zone_map(get_zone_rates_by_skus(skus))
+    stats = stats or {}
+    _trim_stats_lists(stats)
+    return items, stats, zone_map
+
+
+def _build_zone_map(zone_list: list[dict] | None) -> dict[str, dict]:
+    zone_map: dict[str, dict] = {}
+    for z in zone_list or []:
+        if not isinstance(z, dict):
+            continue
+        sku = str(z.get("sku") or "").strip()
+        std = z.get("standard")
+        if sku and isinstance(std, dict):
+            zone_map[sku] = std
+    return zone_map
+
+
+def _trim_stats_lists(stats: dict[str, Any]) -> None:
+    max_list = int(getattr(settings, "DSZ_DETAIL_LIST_MAX_PER_CHUNK", 500))
+    for key in ("missing_sku_list", "failed_sku_list", "extra_sku_list"):
+        value = stats.get(key)
+        if isinstance(value, list):
+            stats[key] = value[:max_list]
+        else:
+            stats[key] = []
+
+
+def _normalize_snapshots(
+    items: list[dict],
+    zone_map: dict[str, dict],
+    vid_map: dict[str, Any],
+    chunk_data_map: dict[str, dict],
+) -> list[dict]:
+    normed: list[dict] = []
+    # 遍历dsz items
+    for raw in items:
+        sku_raw = str((raw or {}).get("sku") or "").strip()
+        std = zone_map.get(sku_raw)
+        raw_for_norm = dict(raw) if isinstance(raw, dict) else {}
+        if std:
+            raw_for_norm["_zone_standard"] = std
+
+        n = normalize_dsz_product(raw_for_norm) # 31个
+        sku = n.get("sku_code")
+        if sku:
+            enrich_shopify_snapshot(n, sku, vid_map, chunk_data_map) # 3个
+        
+        # 计算hashvalue
+        n["attrs_hash_current"] = calc_attrs_hash_current(n) # 1个
+        normed.append(n)
+    return normed
+
+
+def _collect_chunk_changes(
+    normed: list[dict],  # 本次dsz+shopify新数据
+    old_map: dict[str, dict],  #对比的历史数据
+    run_id: str,
+    chunk_idx: int,
+) -> tuple[list[dict], list[tuple[str, dict]]]:
+    
+    # 构建待更新list： 用于后续 bulk_upsert_sku_info, 用于 save_candidates
+    changed_rows: list[dict] = []    
+    candidate_tuples: list[tuple[str, dict]] = []
+
+    for snapshot in normed:
+        sku = snapshot["sku_code"]
+        # 防御意外的 SQL 表达式混入 payload（确保都是普通值）。
+        _assert_plain_snapshot_values(snapshot, run_id, chunk_idx)
+
+        # 旧快照（可能为 None）
+        old = old_map.get(sku)
+
+        # 有变化则把整行 snapshot 追加到 changed_rows
+        changed_fields = diff_snapshot(old, snapshot)
+        if not changed_fields:
+            continue
+        changed_rows.append(snapshot)
+
+        # 基于 changed_fields 构建仅包含“变更字段”的 new_partial: changed_fields 只包含发生变化的列名，最终 new_partial 当然只含这些列的键值对
+        new_partial = {k: snapshot.get(k) for k in changed_fields}
+        if "attrs_hash_current" not in new_partial and "attrs_hash_current" in snapshot:
+            new_partial["attrs_hash_current"] = snapshot.get("attrs_hash_current")
+        candidate_tuples.append((sku, new_partial))
+
+    return changed_rows, candidate_tuples
+
+
+
+
+def _persist_chunk_changes(
+    db,
+    run_id: str,
+    chunk_idx: int,
+    changed_rows: list[dict],   # 一行完整的新数据sku_info
+    candidate_tuples: list[tuple[str, dict]],
+) -> tuple[float, float]:
+    if not changed_rows:
+        return 0.0, 0.0
+    candidate_rows: list[dict] = []
+    try:
+
+        # 批量更新/写入sku_info
+        t0 = time.perf_counter()
+        bulk_upsert_sku_info(db, changed_rows, only_update_when_changed=True)
+        upsert_elapsed = time.perf_counter() - t0
+        print(f"[TIMER] process_chunk run={run_id} idx={chunk_idx} bulk_upsert_sku_info rows={len(changed_rows)} time={upsert_elapsed:.3f} s",flush=True,)
+
+        # 批量写入 product_sync_candidates
+        candidates_elapsed = 0.0
+        candidate_rows = build_candidate_rows(run_id, candidate_tuples)
+        if candidate_rows:
+            t1 = time.perf_counter()
+            save_candidates(db, candidate_rows)
+            candidates_elapsed = time.perf_counter() - t1
+            print(f"[TIMER] process_chunk run={run_id} idx={chunk_idx} save_candidates rows={len(candidate_rows)} time={candidates_elapsed:.3f} s",flush=True,)
+
+        db.commit()
+        return upsert_elapsed, candidates_elapsed
+    except Exception:
+        db.rollback()
+        logger.exception(
+            "failed to persist chunk changes: run=%s idx=%s rows=%d candidates=%d",
+            run_id,
+            chunk_idx,
+            len(changed_rows),
+            len(candidate_rows),
+        )
+        raise
+
+
+def _mark_chunk_success(db, run_id: str, chunk_idx: int, stats: dict[str, Any]) -> None:
+    try:
+        mark_chunk_succeeded(db, run_id, chunk_idx, stats)
+        db.commit()
+    except Exception:
+        db.rollback()
+
+
+def _log_chunk_summary(run_id: str, chunk_idx: int, stats: dict[str, Any]) -> None:
+    stats = stats or {}
+    logger.info(
+        "chunk summary: run=%s idx=%s requested=%d returned=%d missing=%d missing_list=%d "
+        "failed_batches=%d failed_skus=%d failed_sku_list=%d extra=%d extra_list=%d",
+        run_id,
+        chunk_idx,
+        int(stats.get("requested_total", 0) or 0),
+        int(stats.get("returned_total", 0) or 0),
+        int(stats.get("missing_count", 0) or 0),
+        len(stats.get("missing_sku_list", []) or []),
+        int(stats.get("failed_batches_count", 0) or 0),
+        int(stats.get("failed_skus_count", 0) or 0),
+        len(stats.get("failed_sku_list", []) or []),
+        int(stats.get("extra_count", 0) or 0),
+        len(stats.get("extra_sku_list", []) or []),
+    )
 
 
 # [NEW] —— Redis 工具（可选，没装/没配会自动跳过）

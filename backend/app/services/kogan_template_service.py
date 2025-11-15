@@ -155,6 +155,7 @@ class ExportJobBuild:
     row_count: int
     sku_records: List[ExportJobSkuRecord]
     skus: List[str]
+    skipped_dirty_skus: List[str]
 
 
 
@@ -203,6 +204,9 @@ def create_kogan_export_job(
     # 1 - 构建导出数据集
     build = _build_export_dataset(db, country_type, column_specs)
     if build.row_count == 0:
+        if build.skipped_dirty_skus:
+            clear_kogan_dirty_flags(db, build.skipped_dirty_skus, country_type=country_type)
+            db.commit()
         last_job = fetch_latest_export_job(db, country_type)
         raise NoDirtySkuError("没有可导出的 kogan 数据", last_job=last_job)
     
@@ -223,6 +227,9 @@ def create_kogan_export_job(
             for record in build.sku_records
         ],
     )
+    if build.skipped_dirty_skus:
+        clear_kogan_dirty_flags(db, build.skipped_dirty_skus, country_type=country_type)
+        db.commit()
 
     return job
 
@@ -289,8 +296,11 @@ def _build_export_dataset(
     writer.writerow(headers)
 
     sku_records: List[ExportJobSkuRecord] = []
-    all_skus: List[str] = []
+    exported_skus: List[str] = []
     row_count = 0
+    exported_set: Set[str] = set()
+    dirty_order: List[str] = []
+    dirty_seen: Set[str] = set()
 
     # 获取历史上必须更新k1 price的sku list
     need_update_k1_skus: Set[str] = _load_need_update_k1_skus()
@@ -310,6 +320,9 @@ def _build_export_dataset(
         baseline_map = load_kogan_baseline_map(db, country_type, skus)
 
         for sku in skus:
+            if sku not in dirty_seen:
+                dirty_seen.add(sku)
+                dirty_order.append(sku)
             product_row = product_map.get(sku, {})
 
             if country_type == "NZ" and not _has_product_tag(product_row.get("product_tags"), "Kogan NZ"):
@@ -356,7 +369,8 @@ def _build_export_dataset(
             row = [sparse.get(col.logical_key, "") for col in column_specs]
             writer.writerow(row)
             row_count += 1
-            all_skus.append(sku)
+            exported_skus.append(sku)
+            exported_set.add(sku)
 
             # 7 - record sku change
             sku_records.append(
@@ -370,12 +384,16 @@ def _build_export_dataset(
     csv_bytes = buf.getvalue().encode("utf-8")
     filename = f'kogan_diff_{country_type}_{datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")}.csv'
 
+    skipped_dirty_skus = [sku for sku in dirty_order if sku not in exported_set]
+    print("skipped_dirty_skus:", skipped_dirty_skus)
+
     return ExportJobBuild(
         file_name=filename,
         file_bytes=csv_bytes,
         row_count=row_count,
         sku_records=sku_records,
-        skus=all_skus,
+        skus=exported_skus,
+        skipped_dirty_skus=skipped_dirty_skus,
     )
 
 
@@ -506,29 +524,30 @@ def _map_to_kogan_csv_row(
     force_first_price: bool = False,
 ) -> Dict[str, object]:
    
-    price_val = _resolve_price(country_type, product_row, freight_row)
+    # au price / nz price
+    kogan_price_val = _resolve_price(country_type, product_row, freight_row)
     shipping_val = _resolve_shipping(country_type, freight_row)
     weight_val = _resolve_weight(product_row, freight_row)
 
-   
+    rrp_val = _resolve_rrp_price(country_type, kogan_price_val, product_row, freight_row)
 
+    kogan_first_price_val = _resolve_first_price(country_type, kogan_price_val, product_row, freight_row)
 
-
-
-    rrp_val = _resolve_rrp_price(country_type, price_val, product_row, freight_row)
-
-    kogan_first_price_val = _resolve_first_price(country_type, price_val, product_row, freight_row)
-
-    # 修改template k1 price
-    if price_val is not None and price_val > Decimal("67"):
-        logger.info("Kogan first price cleared for SKU %s (country=%s): price=%s > 67 and force_first_price=%s",
-        sku, country_type, price_val, force_first_price,)
+    # AU且满足条件才不更新，NZ都更新
+    if (
+        kogan_price_val is not None
+        and kogan_price_val > Decimal("67")
+        and country_type == "AU"
+        and not force_first_price
+    ):
+        # logger.info("Kogan first price cleared for SKU %s (country=%s): price=%s > 67 and force_first_price=%s",
+        # sku, country_type, price_val, force_first_price,)
         kogan_first_price_val = None
 
 
     row = {
         "SKU": sku,
-        "Price": price_val,
+        "Price": kogan_price_val,
         "RRP": rrp_val,
         "Kogan First Price": kogan_first_price_val,
         "Handling Days": 3,
@@ -548,6 +567,7 @@ def _map_to_kogan_csv_row(
 
     # populate columns we do not currently compute with baseline fallback
     if baseline_row is not None:
+        # check 表头
         for spec in column_specs:
             if spec.always_include:
                 continue
@@ -634,32 +654,54 @@ def _resolve_weight(
 
 
 
+def _calc_rrp_from_price(price_decimal: Optional[Decimal]) -> Optional[Decimal]:
+    if price_decimal is None:
+        return None
+    try:
+        return (price_decimal * Decimal("1.5")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    except (InvalidOperation, TypeError):
+        return None
+
+
 def _resolve_rrp_price(
     country_type: str,
-    price_val: Optional[object],
+    kogan_price_val: Optional[object],
     product_row: Optional[Dict[str, object]],
     freight_row: Optional[Dict[str, object]],
 ) -> Optional[object]:
-    price_decimal = _to_decimal(price_val)
-    if price_decimal is None:
+    
+    kogan_price_decimal = _to_decimal(kogan_price_val)
+    origin_au_rrp_price = _to_decimal(_get_value(product_row, "rrp_price"))
+
+    if kogan_price_decimal is None:
         return None
-    return (price_decimal * Decimal("1.5")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    
+    # 1-au
+    if country_type == "AU":
+        if origin_au_rrp_price is None:
+            return _calc_rrp_from_price(kogan_price_decimal)
+        if origin_au_rrp_price > kogan_price_decimal:
+            return _calc_rrp_from_price(kogan_price_decimal)
+        return origin_au_rrp_price
+        
+    # 2-nz 直接使用
+    return _calc_rrp_from_price(kogan_price_decimal)
 
 
 
 def _resolve_first_price(
     country_type: str,
-    price_val: Optional[object],
+    kogan_price_val: Optional[object],
     product_row: Optional[Dict[str, object]],
     freight_row: Optional[Dict[str, object]],
 ) -> Optional[object]:
     if country_type == "AU":
         return _get_value(freight_row, "kogan_k1_price")
 
-    price_decimal = _to_decimal(price_val)
-    if price_decimal is None:
+    kogan_price_decimal = _to_decimal(kogan_price_val)
+    if kogan_price_decimal is None:
         return None
-    return _calculate_nz_first_price(price_decimal)
+    return _calculate_nz_first_price(kogan_price_decimal)
 
 
 def _calculate_nz_first_price(price_decimal: Decimal) -> Decimal:

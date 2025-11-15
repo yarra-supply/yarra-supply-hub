@@ -104,6 +104,7 @@ export default function ProductsPage() {
     { title: 'Freight (WA_M)', dataIndex: 'freight_wa_m', width: 100 },
     { title: 'Freight (WA_R)', dataIndex: 'freight_wa_r', width: 100 },
     { title: 'Freight (NZ)', dataIndex: 'freight_nz', width: 100 },
+    { title: 'attrs hash', dataIndex: 'attrs_hash_current', width: 120 },
     { title: 'Updated', dataIndex: 'updated_at', width: 160,
       render: (v) => v ? dayjs(v).format('YYYY-MM-DD HH:mm') : '-' },
   ];

@@ -438,7 +438,7 @@ class DSZProductsAPI:
                     per_batch_backoff_sec=per_batch_backoff_sec,
                 )
                 if retry_items:
-                    logger.info(
+                    logger.warning(
                         "DSZ zone_rates missing retry succeeded: requested=%d missing_before=%d retry_count=%d sample=%s",
                         len(req_set),
                         len(missing),

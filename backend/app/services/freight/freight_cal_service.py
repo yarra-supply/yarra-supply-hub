@@ -12,6 +12,8 @@ from app.repository.freight_repo import (
     query_existing_results_map,      # -> Dict[sku, existing_row]
     upsert_freight_results,          # -> (inserted_count, updated_count)
 )
+from app.repository.product_repo import load_products_map
+from app.services.kogan_template_service import _has_product_tag
 # from app.repository.shopify_repo import enqueue_shopify_jobs;
 
 
@@ -28,8 +30,8 @@ _RESULT_COLS = [
     "rural_ave",
     "weighted_ave_s",
     "shipping_med_dif",
-    "weight",
     "cubic_weight",
+    "weight",
     "price_ratio",
     "shipping_type",
     "selling_price",
@@ -102,9 +104,9 @@ def process_batch_compute_and_persist(
 
     # 2) 查询运费计算历史结果（用于对比差异）
     old_map = query_existing_results_map(db, skus)  # {sku: SkuFreightFee ORM}
+    product_map = load_products_map(db, skus)
 
     to_upsert: List[Dict[str, Any]] = []
-
 
     # 3) 逐个计算并对比
     for sku, fin in inputs:
@@ -123,15 +125,37 @@ def process_batch_compute_and_persist(
         row = _map_outputs_to_row(sku, out, attrs_hash_current)
 
         changed_fields = _RESULT_COLS[:] if old is None else _diff_result(old, row)
-        # print(f"CHANGED_FIELDS (sku={sku}): {changed_fields}")
+
+        # Debug logging for specific SKUs
+        _watched_skus = {"DI-ST-N-RDBK-AUG300", "V420-CWMULTIACTIVITYCUBE", "XM-TR-SNOW-190-LED"}
+        if sku in _watched_skus:
+            print(f"[freight_debug] sku={sku}")
+            print("[freight_debug] old:", repr(old))
+            try:
+                print("[freight_debug] row:", json.dumps(row, default=str, ensure_ascii=False))
+            except Exception as _e:
+                print("[freight_debug] row repr:", repr(row), " (json error:", _e, ")")
+            print("[freight_debug] changed_fields:", changed_fields)
+
 
         if changed_fields:
             #  Kogan 导出标记 
             row["last_changed_run_id"] = freight_run_id
             row["last_changed_source"] = trigger
-            row["last_changed_at"] = datetime.now(timezone.utc)
+            row["last_changed_at"] = datetime.now(timezone.utc)  # 在业务列真的变更时刷新
+            row["updated_at"] = datetime.now(timezone.utc)
             row["kogan_dirty_au"] = True
-            row["kogan_dirty_nz"] = True
+
+            product_row = product_map.get(sku, {})
+            current_nz_dirty = getattr(old, "kogan_dirty_nz", False) if old is not None else False
+            row["kogan_dirty_nz"] = current_nz_dirty
+            if (
+                "kogan_nz_price" in changed_fields
+                and product_row
+                and _has_product_tag(product_row.get("product_tags"), "Kogan NZ")
+            ):
+                row["kogan_dirty_nz"] = True
+                
             to_upsert.append(row)
 
     # 4) 落库 upsert

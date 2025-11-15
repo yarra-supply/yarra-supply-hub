@@ -296,11 +296,12 @@ def compute_shipping_type(
     shipping_med_dif: Optional[Decimal],
     remote_check: bool,
     price: Optional[float],
-    fr: Dict[str, Optional[float]],
+    # selling_price: Optional[float],
     cfg: Optional[Mapping[str, any]] = None,
 ) -> tuple[str, Optional[Decimal]]:
     
     price_dec = _d(price)
+    # price_dec = _d(selling_price)
     price_ratio_limit = _cfgD(cfg, "price_ratio", 0.45)
     price_ratio = None
     if price_dec and price_dec != 0 and rural_ave is not None:
@@ -405,7 +406,8 @@ def compute_weight(
 ) -> Optional[Decimal]:
     
     st = (shipping_type or "").strip()
-    is_extra = any(tag in st for tag in ("Extra3", "Extra4", "Extra5"))
+    st_lower = st.lower()
+    is_extra = any(tag in st_lower for tag in ("extra3", "extra4", "extra5"))
     if not is_extra:
         return None
 
@@ -473,6 +475,15 @@ def compute_selling_price(
         today = datetime.now(_FREIGHT_TZ).date()
         if end_date <= (today + timedelta(days=1)):
             return rg
+    
+    # test使用
+    # if end_date:
+    #     now = datetime.now(_FREIGHT_TZ)
+    #     today = now.date()
+    #     if end_date < today:
+    #         return rg
+    #     if end_date == today and now.hour >= 23:
+    #         return rg
 
     return sp if sp is not None else rg
 
@@ -590,13 +601,14 @@ def compute_all(i: FreightInputs,
     shipping_med = compute_shipping_med(fr)
 
     remote_check = compute_remote_check(fr, cfg=cfg)
+    # todo selling price变会变？
     rural_ave = compute_rural_ave(remote_check, fr, shipping_ave)
     weighted_ave_s = compute_weighted_ave_s(remote_check, shipping_ave, rural_ave, cfg=cfg)
     shipping_med_dif = compute_shipping_med_dif(fr, shipping_med)
     cubic_weight = compute_cubic_weight(i.weight, i.cbm, cfg=cfg, sku_code=sku_code)
 
     shipping_type, price_ratio_val = compute_shipping_type(
-        same_shipping, rural_ave, shipping_med_dif, remote_check, i.price, fr, cfg=cfg
+        same_shipping, rural_ave, shipping_med_dif, remote_check, i.price, cfg=cfg
     )
 
     # 新增：weight（calculate weight）
@@ -611,6 +623,7 @@ def compute_all(i: FreightInputs,
     shopify_price = compute_shopify_price(selling_price, cfg=cfg)
     kogan_au_price = compute_kogan_au_price(selling_price, shipping_type, fr.get("VIC_M"), shipping_med, weighted_ave_s, cfg=cfg)
     kogan_k1_price = compute_k1_price(kogan_au_price, cfg=cfg)
+    # todo：变化依赖：selling nz 运费字段 
     kogan_nz_price = compute_kogan_nz_price(selling_price, fr.get("NZ"), cfg=cfg)
     price_ratio = (
         price_ratio_val if isinstance(price_ratio_val, Decimal) else _d(price_ratio_val)

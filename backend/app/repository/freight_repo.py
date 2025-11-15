@@ -255,10 +255,13 @@ def upsert_freight_results(db: Session, rows: List[Dict[str, Any]]) -> Tuple[int
     stmt = insert(SkuFreightFee).values(rows)
 
     # 冲突时更新的列, # 确保新字段也包含在 rows[0] 中，即由 service 层写入
-    update_cols = {  
+    column_keys: set[str] = set()
+    for row in rows:
+        column_keys.update(row.keys())
+    column_keys.discard("sku_code")
+    update_cols = {
         k: getattr(stmt.excluded, k)
-        for k in rows[0].keys()
-        if k != "sku_code"
+        for k in column_keys
     }
     upsert_stmt = stmt.on_conflict_do_update(
         index_elements=[SkuFreightFee.sku_code],

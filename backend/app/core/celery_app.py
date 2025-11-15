@@ -20,13 +20,13 @@ celery_app = Celery(
     backend=settings.CELERY_RESULT_BACKEND,     # 结果存储 (Redis)
     include=[
         # 让 Celery 在启动时就加载这些模块, include 告诉 Celery 这些模块里定义的任务函数要自动注册
-        "app.orchestrator.scheduler_tick",                          # 定时调度任务
-        "app.orchestrator.product_sync.product_sync_task",          # 商品全量同步
-        "app.orchestrator.retry_sweeper",                           # 扫失败重试
+        "app.orchestration.scheduler_tick",                          # 定时调度任务
+        "app.orchestration.product_sync.product_sync_task",          # 商品全量同步
+        "app.orchestration.retry_sweeper",                           # 扫失败重试
 
-        "app.orchestrator.price_reset.price_reset",                 # 周三价格回滚
-        "app.orchestrator.freight_calculation.freight_task",        # 运费计算
-        # "app.orchestrator.dispatch_shopify.dispatch_shopify_task",      # Shopify同步任务
+        "app.orchestration.price_reset.price_reset",                 # 周三价格回滚
+        "app.orchestration.freight_calculation.freight_task",        # 运费计算
+        # "app.orchestration.dispatch_shopify.dispatch_shopify_task",      # Shopify同步任务
     ],
 )
 
@@ -43,6 +43,7 @@ celery_app.conf.update(
     task_track_started=True,                     # 任务启动时标记 started
     broker_connection_retry_on_startup=True,     # 启动时如果 broker 挂了会重试
     # === 容错和超时控制 ===
+    worker_concurrency=1,
     worker_prefetch_multiplier=1,    # 一个 worker 一次只取一个任务
     task_acks_late=True,             # worker crash 后任务会回队列/任务会重新分配 防止任务丢失,任务执行完再确认，异常可重投
     # task_time_limit=60 * 20,         # 最长运行 20 分钟（硬超时）不适合：需要释放外部资源/写回状态/删临时文件的任务（比如有 DSZ/Shopify 的长 I/O、分页拉取、文件生成等）。
@@ -63,6 +64,7 @@ celery_app.conf.task_queues = (
     Queue("default", Exchange("default"), routing_key="default"),
 
     Queue("orchestrator", Exchange("orchestrator"), routing_key="orchestrator"),   # 商品同步编排相关任务
+    Queue("chunks", Exchange("chunks"), routing_key="chunks"),                     # 处理 process_chunk/finalize_run
     Queue("dsz_io", Exchange("dsz_io"), routing_key="dsz_io"),                     # 专门跑 DSZ API 的任务
 
     Queue("freight", Exchange("freight"), routing_key="freight"),                  # 专门跑 运费计算
@@ -84,27 +86,30 @@ celery_app.conf.task_routes = {
     "app.orchestration.scheduler_tick.tick_price_reset": {"queue": "orchestrator"},
 
     # 周三价格回滚
-    "app.orchestrator.price_reset.kick_price_reset": {"queue": "orchestrator"},
+    "app.orchestration.price_reset.price_reset.kick_price_reset": {"queue": "orchestrator"},
 
     # 商品同步编排相关任务
     "app.orchestration.product_sync_task.sync_start_full": {"queue": "orchestrator"},
     "app.orchestration.product_sync_task.poll_bulk_until_ready": {"queue": "orchestrator"},
     "app.orchestration.product_sync_task.handle_bulk_finish": {"queue": "orchestrator"},
-    
+    "app.orchestration.product_sync.product_sync_task.process_chunk": {"queue": "orchestrato"},
+    "app.orchestration.product_sync.product_sync_task.finalize_run": {"queue": "orchestrato"},
+    # "app.orchestration.product_sync.product_sync_task.process_chunk": {"queue": "chunks"},
+    # "app.orchestration.product_sync.product_sync_task.finalize_run": {"queue": "chunks"},
 
     #todo 其他2个要写吗？
-    "app.orchestrator.product_sync.bulk_url_sweeper": {"queue": "orchestrator"},
+    "app.tasks.product_full_sync.bulk_url_sweeper": {"queue": "orchestrator"},
 
     # DSZ API 调用（限流队列；请用单独 worker 并发=1 消费它）
-    # todo 现在不用了？
-    "app.orchestrator.products_full_sync.dsz_fetch": {"queue": "dsz_io"},
+    # todo 不用了？
+    "app.tasks.product_full_sync.dsz_fetch": {"queue": "dsz_io"},
 
     # 运费计算
-    "app.orchestrator.freight_calculation.kick_freight_calc": {"queue": "freight"},
-    "app.orchestrator.freight_calculation.freight_calc_run": {"queue": "freight"},
+    "app.orchestration.freight_calculation.freight_task.kick_freight_calc": {"queue": "freight"},
+    "app.orchestration.freight_calculation.freight_task.freight_calc_run": {"queue": "freight"},
 
     # Shopify 出站
-    # "app.orchestrator.dispatch_shopify.dispatch_shopify_task.*": {"queue": "dispatch"},
+    # "app.orchestration.dispatch_shopify.dispatch_shopify_task.*": {"queue": "dispatch"},
 }
 
 
@@ -113,26 +118,26 @@ celery_app.conf.task_routes = {
 celery_app.conf.beat_schedule = {
     
     # 每 5 分钟由 DB 决定是否触发全量同步（具备开关/时间/隔周闸门）
-    "db-schedule-tick": {
-        "task": "app.orchestrator.scheduler_tick.tick",
-        "schedule": 300,  # 秒
-    },
+    # "db-schedule-tick": {
+    #     "task": "app.orchestration.scheduler_tick.tick_product_full_sync",
+    #     "schedule": 180,  # 秒
+    # },
 
-    "db-schedule-price-reset": {
-        "task": "app.orchestrator.scheduler_tick.tick_price_reset",
-        "schedule": 300,
-        # "options": {"queue": "orchestrator"}
-    },
+    # "db-schedule-price-reset": {
+    #     "task": "app.orchestration.scheduler_tick.tick_price_reset",
+    #     "schedule": 300,
+    #     # "options": {"queue": "orchestrator"}
+    # },
 
     # B) 兜底：每 2 分钟扫一遍未拿到 URL 的 run，触发轮询（强烈推荐保留）
     # "bulk-url-sweeper": {
-    #     "task": "app.orchestrator.product_sync.product_sync_task.bulk_url_sweeper",
+    #     "task": "app.orchestration.product_sync.product_sync_task.bulk_url_sweeper",
     #     "schedule": crontab(minute="*/2"),
     # },
 
     # C) 失败扫表（默认 5 分钟一次）
     # "retry-sweeper": {
-    #     "task": "app.orchestrator.retry_sweeper.sweep_failures", 
+    #     "task": "app.orchestration.retry_sweeper.sweep_failures", 
     #     "schedule": {"__type__": "crontab", "minute": "*/5"},
     # },
 }

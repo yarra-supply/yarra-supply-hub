@@ -41,15 +41,16 @@ _OUTPUT_FIELDS = (
     ("rural_ave", "rural_ave"),
     ("weighted_ave_s", "weighted_ave_s"),
     ("shipping_med_dif", "shipping_med_dif"),
+    # todo？
     ("weight", "weight"),
     ("cubic_weight", "cubic_weight"),
     ("shipping_type", "shipping_type"),
-    ("price_ratio", "price_ratio"),
     ("selling_price", "selling_price"),
     ("shopify_price", "shopify_price"),
     ("kogan_au_price", "kogan_au_price"),
     ("kogan_k1_price", "kogan_k1_price"),
     ("kogan_nz_price", "kogan_nz_price"),
+    ("price_ratio", "price_ratio"),
 )
 _TARGET_COLS = tuple(name for name, _ in _OUTPUT_FIELDS)
 
@@ -71,7 +72,7 @@ def _gen_run_id() -> int:
 @shared_task(name="app.orchestration.price_reset.price_reset.kick_price_reset")
 def kick_price_reset() -> dict:
 
-    target_date = _tomorrow_local_date() # 明天（本地时区）
+    target_date = datetime.now(_CELERY_TZ).date()
     db: Session = SessionLocal()
     processed, changed_rows = 0, 0
     run_id = _gen_run_id()  # 生成一个这次流程的 run_id

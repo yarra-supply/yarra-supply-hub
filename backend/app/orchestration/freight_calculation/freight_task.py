@@ -51,10 +51,10 @@ def kick_freight_calc(product_run_id: Optional[str] = None, trigger: str = "manu
         db.close()
 
     # todo 测试使用
-    freight_calc_run.run(run_id, product_run_id, trigger)
+    # freight_calc_run.run(run_id, product_run_id, trigger)
 
     # 把 run_id、product_run_id 传下去
-    #freight_calc_run.delay(run_id, product_run_id, [])
+    freight_calc_run.run(run_id, product_run_id, trigger)
     
     logger.info("======== kick_freight_calc end ========")
     return {"freight_run_id": run_id}
@@ -130,10 +130,8 @@ def freight_calc_run(
             changed_total += changed
             iteration_elapsed = time.perf_counter() - iteration_start
 
-            logger.info(
-                "freight_calc_run batch=%d size=%d changed=%d elapsed=%.2fs",
-                (i // BATCH_SIZE) + 1, len(batch), changed, iteration_elapsed,
-            )
+            logger.info("freight_calc_run batch=%d size=%d changed=%d elapsed=%.2fs",
+                (i // BATCH_SIZE) + 1, len(batch), changed, iteration_elapsed,)
             
         total_elapsed = time.perf_counter() - loop_start
         total_batches = (len(target_skus) + BATCH_SIZE - 1) // BATCH_SIZE

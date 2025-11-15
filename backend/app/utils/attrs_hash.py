@@ -13,12 +13,8 @@ from app.core.config import settings
 # 把 FREIGHT_RELEVANT_FIELDS 作为“入参字段白名单”，对其按固定顺序序列化后做哈希，得到 attrs_hash_current
 # 唯一权威白名单：凡是会影响 【运费/定价结果的入参字段】，都在这里
 FREIGHT_HASH_FIELDS = (
-    
     "price", "special_price", "special_price_end_date",  # 价格（含促销有效性）
-    
-    "length", "width", "height", "weight",          # 尺寸/重量, CBM不使用，都用 L*W*H/1,000,000 计算
-
-    # cbm加不加？
+    "weight", "cbm"    # 尺寸/重量, CBM不使用，都用 L*W*H/1,000,000 计算
     
     "freight_act",                                  # 运费（含 NZ、REMOTE；NT 做兼容保留）
     "freight_nsw_m", "freight_nsw_r",
@@ -30,6 +26,7 @@ FREIGHT_HASH_FIELDS = (
     "freight_vic_m", "freight_vic_r",
     "freight_wa_m", "freight_wa_r",
     "freight_nz",
+    # "length", "width", "height", "brand", "supplier", "stock_qty", "ean_code","rrp_price", "product_tags",
 )
 
 _AU_TZ = pytz.timezone(getattr(settings, "CELERY_TIMEZONE", "Australia/Melbourne"))
@@ -50,7 +47,7 @@ def calc_attrs_hash_current(snapshot: dict) -> str:
     snap = deepcopy(snapshot)
     
     # 1) 修改special_price的有效性
-    _apply_special_price_validity(snap)
+    # _apply_special_price_validity(snap)
 
     # 2) 拼接为稳定字符串后做 sha256
     parts = [f"{k}={_normalize_for_hash(snap.get(k))}" for k in FREIGHT_HASH_FIELDS]

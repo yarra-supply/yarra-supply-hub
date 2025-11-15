@@ -10,6 +10,8 @@ from typing import Optional
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from app.utils.serialization import format_product_tags
+
 
 # —— 约定导出列（与前端展示一致） —— #
 _EXPORT_COLUMNS_SQL = [
@@ -34,6 +36,7 @@ _EXPORT_COLUMNS_SQL = [
     "f.kogan_nz_price",
     "f.weight",
     "COALESCE(si.product_tags, '[]'::jsonb) AS product_tags",
+    "f.attrs_hash_last_calc",
     "f.updated_at",
 ]
 
@@ -61,6 +64,7 @@ _EXPORT_HEADER_LABELS = {
     "kogan_k1_price": "K1 Price",
     "kogan_nz_price": "Kogan NZPrice",
     "weight": "updateWeight",
+    "attrs_hash_last_calc": "attrs_hash_last_calc",
     "updated_at": "UpdatedAt",
 }
 
@@ -122,7 +126,7 @@ def export_freight_csv_iter_sql(
     keys = rs.keys()
     for row in rs:
         d = dict(zip(keys, row))
-        d["product_tags"] = _format_product_tags(d.get("product_tags"))
+        d["product_tags"] = format_product_tags(d.get("product_tags"))
         updated = d.get("updated_at")
         if isinstance(updated, datetime):
             d["updated_at"] = updated.replace(microsecond=0).isoformat()
@@ -180,17 +184,6 @@ def _csv_write_flush(buf: io.StringIO, flush_bytes: int):
     if payload and len(payload) >= flush_bytes:
         yield payload
         buf.seek(0); buf.truncate(0)
-
-
-def _format_product_tags(value):
-    if value is None:
-        return None
-    if isinstance(value, list):
-        tokens = [str(v).strip() for v in value if v is not None and str(v).strip()]
-        return ",".join(tokens)
-    if isinstance(value, dict):
-        return json.dumps(value, ensure_ascii=False)
-    return str(value)
 
 
 def _parse_tags_filter(raw: Optional[str]) -> list[str]:

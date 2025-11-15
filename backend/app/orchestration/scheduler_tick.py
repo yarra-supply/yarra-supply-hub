@@ -69,9 +69,11 @@ def tick_product_full_sync():
             return {"status": "outside-window"}
 
 
-        # 6) 隔周闸门 todo 可以改成每周?
-        if row.get("every_2_weeks") and not _pass_biweekly_gate(now_local, row.get("last_run_at")):
-                return {"status": "biweekly-gate-skip"}
+        # 6) 每周闸门：若配置启用，则要求本周尚未跑过
+        # if row.get("every_2_weeks") and not _pass_weekly_gate(now_local, row.get("last_run_at")):
+        # if row.get("every_2_weeks") and not _pass_weekly_gate(now_local, row.get("last_run_at")):
+        #         return {"status": "weekly-gate-skip"}
+    
         
         # 7) 二次幂等保护：同一窗口内只触发一次
         if row.get("last_run_at"):
@@ -80,7 +82,8 @@ def tick_product_full_sync():
                 return {"status": "already-fired-in-window"}
 
         # 8) 触发入口: 投递异步任务，不阻塞当前 tick
-        sync_start_full.delay()
+        result = sync_start_full.run()
+        # print("task id:", result.id)
 
         # 9) 更新 last_run_at（UTC）
         db.execute(
@@ -146,9 +149,9 @@ def tick_price_reset():
         if not in_window:
             return {"status": "outside-window"}
         
-        # 6) 隔周闸门 todo 可以改成每周?
-        if row.get("every_2_weeks") and not _pass_biweekly_gate(now_local, row.get("last_run_at")):
-            return {"status": "biweekly-gate-skip"}
+        # 6) 每周闸门
+        # if row.get("every_2_weeks") and not _pass_weekly_gate(now_local, row.get("last_run_at")):
+        #     return {"status": "weekly-gate-skip"}
         
         # 7）二次幂等保护：同一窗口内只触发一次
         if row.get("last_run_at"):
@@ -157,7 +160,7 @@ def tick_price_reset():
                 return {"status": "already-fired-in-window"}
 
         # 8) 触发价格还原入口: 投递异步任务，不阻塞当前 tick
-        kick_price_reset.delay()
+        kick_price_reset.run();
 
         # 9) 更新 last_run_at（UTC 带时区）
         db.execute(
@@ -199,3 +202,20 @@ def _pass_biweekly_gate(now_local: dt.datetime, last_run_at_utc: dt.datetime|Non
 
     # 只有当奇偶性变化（本周序与上次不同奇偶）时放行
     return (w2 % 2) != (w1 % 2) or (y1 != y2)
+
+
+def _pass_weekly_gate(now_local: dt.datetime, last_run_at_utc: dt.datetime | None) -> bool:
+    """
+    每周闸门：同一周只允许运行一次。
+    """
+    if not last_run_at_utc:
+        return True
+
+    last_local = last_run_at_utc.astimezone(now_local.tzinfo)
+    y1, w1, _ = last_local.isocalendar()
+    y2, w2, _ = now_local.isocalendar()
+
+    if y1 != y2:
+        return True
+
+    return w1 != w2

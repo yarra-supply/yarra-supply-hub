@@ -17,10 +17,26 @@ export const http = axios.create({
   timeout: 30000,
 });
 
+const LONG_TIMEOUT_MS = 120000;
+const LONG_TIMEOUT_MATCHERS: Array<(url: string) => boolean> = [
+  (url) => /^\/kogan-template\/export(?:$|\?)/.test(url),
+  (url) => /^\/kogan-template\/download(?:$|\?)/.test(url),
+  (url) => /^\/kogan-template\/export\/[^/]+\/download(?:$|\?)/.test(url),
+  (url) => /^\/kogan-template\/export\/[^/]+\/apply(?:$|\?)/.test(url),
+];
+
 http.interceptors.request.use((config) => {
-  const isKoganApply = config.url?.includes('/kogan-template/export/') && config.url?.endsWith('/apply');
-  if (isKoganApply) {
-    config.timeout = Math.max(config.timeout ?? 0, 120000);
+  const rawUrl = config.url ?? '';
+  let normalized = rawUrl;
+  try {
+    const parsed = new URL(rawUrl, 'http://local');
+    normalized = parsed.pathname + parsed.search;
+  } catch {
+    // keep raw string if it's a relative path without protocol/host
+  }
+
+  if (LONG_TIMEOUT_MATCHERS.some((match) => match(normalized))) {
+    config.timeout = Math.max(config.timeout ?? 0, LONG_TIMEOUT_MS);
   }
   return config;
 });
@@ -36,4 +52,3 @@ http.interceptors.request.use((config) => {
 // }
 
 export default http;
-

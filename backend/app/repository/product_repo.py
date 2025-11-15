@@ -7,9 +7,8 @@ from datetime import datetime, date, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 from typing import Iterable, Optional, Dict, Any, List, Iterator, Tuple, Set
 from decimal import Decimal
-import io, csv, json
+import io, csv
 import math
-import uuid
 
 import sqlalchemy as sa
 from sqlalchemy import select, func, text
@@ -23,38 +22,51 @@ from sqlalchemy.orm.attributes import QueryableAttribute
 from decimal import Decimal
 
 from app.db.model.product import SkuInfo, ProductSyncCandidate, ProductSyncChunk
+from app.utils.serialization import format_product_tags
 
 
 '''
- 定义“参与对比/写库的字段白名单”。
- 作用：做 diff 时只比较这些字段，避免无关字段导致“假变更”。
- Upsert 时只更新这些字段，减少写放大。以 sku_info 规范字段为准
+  定义“参与对比/写库的字段白名单”。5个字段
+  作用：做 diff 时只比较这些字段，避免无关字段导致“假变更”。
+  Upsert 时只更新这些字段，减少写放大。以 sku_info 规范字段为准
 '''
 SYNC_FIELDS = [
-    "sku_code", "brand", "stock_qty", 
-    "supplier", "ean_code",
-    "price", "rrp_price", "special_price", "special_price_end_date", "shopify_price",
+    "sku_code",
+    "brand",
+    "stock_qty",
+    "supplier",
+    "ean_code",
+    "price",
+    "rrp_price",
+    "special_price",
+    "special_price_end_date",
+    "shopify_price",
     "shopify_variant_id",
-    "weight", "length", "width", "height", "cbm",
+    "weight",
+    "length",
+    "width",
+    "height",
+    "cbm",
     "product_tags",
-
-    "freight_act", "freight_nsw_m", "freight_nsw_r", "freight_nt_m", "freight_nt_r",
-    "freight_qld_m", "freight_qld_r", "remote", "freight_sa_m", "freight_sa_r",
-    "freight_tas_m", "freight_tas_r", "freight_vic_m", "freight_vic_r", "freight_wa_m",
-    "freight_wa_r", "freight_nz",
-    "attrs_hash_current",           # 新增：后续增量/5.3 计算需要
+    "freight_act",
+    "freight_nsw_m",
+    "freight_nsw_r",
+    "freight_nt_m",
+    "freight_nt_r",
+    "freight_qld_m",
+    "freight_qld_r",
+    "remote",
+    "freight_sa_m",
+    "freight_sa_r",
+    "freight_tas_m",
+    "freight_tas_r",
+    "freight_vic_m",
+    "freight_vic_r",
+    "freight_wa_m",
+    "freight_wa_r",
+    "freight_nz",
+    "attrs_hash_current",
 ]
-
-
-def _is_sqlalchemy_expression(value: Any) -> bool:
-    """
-    Detect whether a value is any SQLAlchemy SQL expression, column attribute, or bind.
-    """
-    if isinstance(value, (ClauseElement, BindParameter, QueryableAttribute)):
-        return True
-    if hasattr(value, "__clause_element__"):
-        return True
-    return False
 
 
 # 前端表格用到的主要字段（与 /products 返回一致
@@ -66,7 +78,7 @@ _PRODUCT_EXPORT_COLUMNS = [
     "freight_wa_r", "freight_nz",
 
     "ean_code", "brand", "supplier", "weight", "length", "width", "height", "cbm",
-    "product_tags", "shopify_price","updated_at",
+    "product_tags", "shopify_price", "attrs_hash_current", "updated_at",
 ]
 
 _PRODUCT_HEADER_LABELS = {
@@ -104,12 +116,124 @@ _PRODUCT_HEADER_LABELS = {
     "cbm": "CBM",
     "product_tags": "Product Tags",
     "shopify_price": "Shopify Price",
+    "attrs_hash_current": "attrs hash",
     "updated_at": "Updated At",
 }
 
 _PRODUCT_CSV_HEADERS = [
     _PRODUCT_HEADER_LABELS.get(col, col) for col in _PRODUCT_EXPORT_COLUMNS
 ]
+
+
+def _is_sqlalchemy_expression(value: Any) -> bool:
+    """
+    Detect whether a value is any SQLAlchemy SQL expression, column attribute, or bind.
+    """
+    if isinstance(value, (ClauseElement, BindParameter, QueryableAttribute)):
+        return True
+    if hasattr(value, "__clause_element__"):
+        return True
+    return False
+
+
+
+def _clean_row_values(row: dict) -> dict:
+    """
+    Normalize a snapshot row so it contains plain Python values safe for SQLAlchemy.
+    """
+    clean: dict[str, Any] = {}
+    for key, value in row.items():
+        if isinstance(value, BindParameter):
+            value = getattr(value, "effective_value", getattr(value, "value", None))
+
+        if _is_sqlalchemy_expression(value):
+            logger.warning(
+                "bulk payload detected SQL expression: field=%s type=%s value=%r",
+                key,
+                type(value),
+                value,
+            )
+            raise ValueError(
+                f"bulk payload field={key!r} is SQL expression ({type(value)!r}); provide plain Python value"
+            )
+        
+        # if key in {"length", "width", "height", "cbm", "weight"}:
+        #     logger.info(
+        #         "upsert payload field=%s type=%s value=%r",
+        #         key,
+        #         type(value),
+        #         value,
+        #     )
+        if isinstance(value, Decimal) and not value.is_finite():
+            value = None
+        if isinstance(value, float) and (math.isnan(value) or math.isinf(value)):
+            value = None
+        clean[str(key)] = value
+    return clean
+
+
+def _prepare_bulk_payload(rows: list[dict], *, key: str) -> list[dict]:
+    """
+    Deduplicate/clean rows before bulk persistence.
+    """
+    deduped: dict[str, dict] = {}
+    for row in rows or []:
+        identifier = row.get(key)
+        if not identifier:
+            continue
+        deduped[str(identifier)] = _clean_row_values(row)
+    return list(deduped.values())
+
+
+def _execute_upsert(
+    db: Session,
+    table,
+    rows: list[dict],
+    *,
+    conflict_keys: List[str],
+    update_columns: List[str],
+    extra_updates: Optional[Dict[str, Any]] = None,
+) -> int:
+    if not rows:
+        return 0
+    
+    # 不要把冲突键 sku_code 也更新
+    update_cols = [c for c in update_columns if c not in conflict_keys]
+
+    # 冲突键转换成真正的 Column 对象
+    # conflict_cols = [getattr(table.c, k) for k in conflict_keys]
+
+    chunk_size: int = 1000
+    total = 0
+
+    for idx in range(0, len(rows), chunk_size):
+        chunk = [_clean_row_values(row) for row in rows[idx : idx + chunk_size]]
+        # 构造 INSERT ... VALUES (...)
+        stmt = insert(table).values(chunk)
+
+        # 如果触发冲突（sku_code 重复），就用这批行里对应列的值去覆盖旧行，同时把 extra_updates（例如 updated_at、last_changed_at）一起写进去
+        updates = {col: getattr(stmt.excluded, col) for col in update_cols}
+        # updates = {col: getattr(stmt.excluded, col) for col in update_columns}
+        # 冲突时的 SET 子句：用 excluded.xxx 覆盖旧值，但如果这一批传的是 NULL，则保留旧值（coalesce）
+        # updates = {
+        #     col: sa.func.coalesce(getattr(stmt.excluded, col), getattr(table.c, col))
+        #     for col in update_cols
+        # }
+
+        # 额外更新（updated_at = now()），这里放 SQL 表达式
+        if extra_updates:
+            updates.update(extra_updates)
+        
+        # 真正生成 upsert: 这个流程就是“批量 upsert 模板”——一次构建 SQL、一次执行，多批循环是为了别让单条 SQL 带太多 VALUES
+        upsert_stmt = stmt.on_conflict_do_update(
+            index_elements=conflict_keys,
+            set_=updates,
+        )
+        # print(str(upsert_stmt.compile(dialect=sa.dialects.postgresql.dialect())))
+
+        res = db.execute(upsert_stmt)
+        total += int(res.rowcount or 0)
+    return total
 
 
 
@@ -307,73 +431,15 @@ def iter_price_reset_candidates(
 
 
 
-# ========= 对比新旧快照，找出变更字段 =========
-# 场景：给 orchestration/product_sync 用，找出有变化的 SKU 及其变化字段
-# 一次对比一个sku
-def diff_snapshot(old: dict|None, new: dict) -> dict:
-
-    # 先比对 attrs_hash_current, 若新旧哈希一致，则直接跳过逐字段对比
-    base = old or {}
-    if base.get("attrs_hash_current") == new.get("attrs_hash_current"):
-        special = set()
-        for field in ("shopify_variant_id", "shopify_price", "product_tags"):
-            if base.get(field) != new.get(field):
-                special.add(field)
-        if special:
-            return special
-        return set()  # 完全一致，省去逐字段比较
-
-    changed = set()
-    for k in SYNC_FIELDS:
-        if base.get(k) != new.get(k):
-            changed.add(k)
-    return changed
-
-
-
-"""
-批量 upsert SKU 信息
-   - 把一批标准化后的 SKU 行批量 Upsert 到 sku_info 表
-   - Postgres 的 INSERT ... ON CONFLICT (sku_code) DO UPDATE
-   - only_update_when_changed=True：只在确有变化时才 UPDATE（避免刷新 updated_at）
-   - 批量 UPSERT sku_info；只有当 SYNC_FIELDS 任一字段真的发生变化时，才刷新 last_changed_at = now()。
-   - 返回尝试写入的行数（不是受影响行数）。
-   - 场景：给 orchestration/product_sync 用，批量写入变更的 SKU 记录
-"""
 def bulk_upsert_sku_info(db, rows: list[dict], *, only_update_when_changed: bool=False) -> None:
-    """
-    把每条记录逐条 upsert。only_update_when_changed=True 时会先比对旧快照，未变更则跳过。
-    """
     if not rows:
         return
 
-    total = len(rows)
+    payload_rows = _prepare_bulk_payload(rows, key="sku_code")
+    if not payload_rows:
+        return
 
     try:
-        deduped: dict[str, dict] = {}
-        for row in rows:
-            sku = row.get("sku_code")
-            if not sku:
-                continue
-            clean: dict[str, Any] = {}
-            for key, value in row.items():
-                if isinstance(value, BindParameter):
-                    value = getattr(value, "effective_value", getattr(value, "value", None))
-                if _is_sqlalchemy_expression(value):
-                    raise ValueError(
-                        f"bulk_upsert_sku_info sku={sku!r} field={key!r} is SQL expression ({type(value)!r}); provide plain Python value"
-                    )
-                if isinstance(value, Decimal) and not value.is_finite():
-                    value = None
-                if isinstance(value, float) and (math.isnan(value) or math.isinf(value)):
-                    value = None
-                clean[str(key)] = value
-            deduped[sku] = clean
-
-        payload_rows = list(deduped.values())
-        if not payload_rows:
-            return
-
         existing_map: dict[str, dict] = {}
         if only_update_when_changed:
             skus = [r["sku_code"] for r in payload_rows if r.get("sku_code")]
@@ -391,6 +457,7 @@ def bulk_upsert_sku_info(db, rows: list[dict], *, only_update_when_changed: bool
 
         now_expr = func.now()
 
+        rows_to_persist: list[dict] = []
         for row in payload_rows:
             sku = row.get("sku_code")
             if not sku:
@@ -398,259 +465,61 @@ def bulk_upsert_sku_info(db, rows: list[dict], *, only_update_when_changed: bool
 
             if only_update_when_changed:
                 current = existing_map.get(sku)
-                if current is not None:
-                    if all(row.get(field) == current.get(field) for field in SYNC_FIELDS):
-                        continue
+                if current is not None and all(
+                    row.get(field) == current.get(field) for field in SYNC_FIELDS
+                ):
+                    continue
 
-            stmt = insert(SkuInfo).values(row)
-            updates = {field: getattr(stmt.excluded, field) for field in SYNC_FIELDS}
-            updates.update(
-                {
-                    "updated_at": now_expr,
-                    "last_changed_at": now_expr,
-                }
-            )
-            db.execute(
-                stmt.on_conflict_do_update(
-                    index_elements=[SkuInfo.sku_code],
-                    set_=updates,
-                )
+            rows_to_persist.append(row)
+
+        if rows_to_persist:
+            _execute_upsert(
+                db,
+                SkuInfo,
+                rows_to_persist,
+                conflict_keys=["sku_code"],
+                update_columns=SYNC_FIELDS,
+                extra_updates={"updated_at": now_expr, "last_changed_at": now_expr},
             )
     except Exception:
         logger.exception(
             "bulk_upsert_sku_info failed: rows=%d only_update=%s sample=%s",
-            total,
+            len(rows),
             only_update_when_changed,
-            rows[:3],
+            rows[:10],
         )
         raise
-
-
-def bulk_upsert_sku_info_2(
-    db: Session,
-    changed: list[tuple[str, dict]],
-) -> int:
-    """
-    列级 upsert：仅更新传入字段，未提供的列保持原值（类似 freight_repo.update_changed_prices）。
-    适用于“已知哪些列发生变化”的场景。
-    """
-    if not changed:
-        return 0
-
-    # 去重：同一 SKU 只保留最后一次出现，并合并字段
-    merged: dict[str, dict[str, Any]] = {}
-    for sku, fields in changed:
-        if not sku or not fields:
-            continue
-        payload = merged.setdefault(str(sku), {})
-        for key, value in fields.items():
-            payload[str(key)] = value
-
-    if not merged:
-        return 0
-
-    model_cols: set[str] = set(SkuInfo.__table__.columns.keys())
-    meta_cols = {
-        "id",
-        "sku_code",
-        "created_at",
-        "updated_at",
-        "last_changed_at",
-    }
-
-    data_cols: set[str] = set()
-    for fields in merged.values():
-        for col in fields.keys():
-            if col in model_cols and col not in meta_cols:
-                data_cols.add(col)
-
-    rows_to_insert: list[dict[str, Any]] = []
-    now_expr = sa.func.now()
-    for sku, fields in merged.items():
-        row: dict[str, Any] = {"sku_code": sku}
-        for col in data_cols:
-            row[col] = fields.get(col)
-        row["updated_at"] = now_expr
-        row["last_changed_at"] = now_expr
-        rows_to_insert.append(row)
-
-    if not rows_to_insert:
-        return 0
-
-    table_cols = SkuInfo.__table__.c
-    total = 0
-    BATCH = 1000
-    for idx in range(0, len(rows_to_insert), BATCH):
-        chunk = rows_to_insert[idx : idx + BATCH]
-        stmt = insert(SkuInfo).values(chunk)
-        excluded = stmt.excluded
-
-        set_updates: dict[str, Any] = {}
-        for col in sorted(data_cols):
-            set_updates[col] = sa.func.coalesce(getattr(excluded, col), getattr(table_cols, col))
-
-        changed_terms = [
-            sa.and_(
-                getattr(excluded, col).isnot(None),
-                getattr(excluded, col).is_distinct_from(getattr(table_cols, col)),
-            )
-            for col in data_cols
-        ]
-        if changed_terms:
-            changed_pred = sa.or_(*changed_terms)
-        else:
-            changed_pred = sa.literal(False)
-
-        set_updates.update(
-            {
-                "updated_at": now_expr,
-                "last_changed_at": sa.case(
-                    (changed_pred, now_expr),
-                    else_=SkuInfo.last_changed_at,
-                ),
-            }
-        )
-
-        upsert_stmt = stmt.on_conflict_do_update(
-            index_elements=[SkuInfo.sku_code],
-            set_=set_updates,
-        )
-        res = db.execute(upsert_stmt)
-        total += int(res.rowcount or 0)
-
-    return total
 
 
 """
 批量保存变更候选记录
 场景：给 orchestration/product_sync 用，保存“本次 run 中字段有变化的 SKU”及其变更字段/新值
-    - 把“确实变了”的 SKU 的变动字段，以 (run_id, sku) 为幂等键批量 upsert 到候选表
+    - 将预处理好的候选行批量 upsert 到 product_sync_candidates。
+    - 需要调用方提前构造 run_id、sku_code、change_mask、new_snapshot、change_count。
     - 冲突覆盖保证“同 run、同 SKU”只保留最后一次写入
     - new_s: 变化字段子集
     - 把“有变化的 SKU”写入 product_sync_candidates（候选表），给后续 5.3 只处理增量
 """
-def save_candidates(db: Session, run_id: str, tuples: list[tuple[str, dict]]) -> int:  
-    """
-    将 (sku, new_partial_fields) 批量 upsert 到 product_sync_candidates
-    覆盖式策略：同一 (run_id, sku) 后写覆盖先写
-    表结构：
-      change_mask: JSONB 数组（如 ["price","weight"]）
-      new_snapshot: JSONB 对象（如 {"price": 19.99, "weight": 2.4}）
-    """
-    if not tuples:
+def save_candidates(db: Session, rows: list[dict]) -> int:  
+    if not rows:
         return 0
 
     try:
-        rows = []
-        seen = set()    # 同一次调用内的去重
-
-        for sku, new_s in tuples:
-            if not new_s:
-                continue
-            key = (run_id, sku)
-            if key in seen:
-                continue
-            seen.add(key)
-
-            change_mask = {str(k): True for k in new_s.keys()}
-            change_count = len(change_mask)
-            if change_count == 0:
-                continue
-
-            snapshot = _to_jsonable(new_s)
-            
-            rows.append({
-                "run_id": run_id,
-                "sku_code": sku,
-                "change_mask": change_mask,  # jsonb object
-                "new_snapshot": snapshot,       # 就是 new_s 本身，保存变化字段的新值，便于下游有选择地处理（比如只看价格变化）
-                "change_count": change_count,
-            })
-
-        if not rows:
-            return 0
-        
-        # debug: print/log the size of rows being upserted
-        # logger.info("[save_candidates] candidate rows size: %d", len(rows))
-        # print(f"[save_candidates] candidate rows size: {len(rows)}")
-
-        stmt = insert(ProductSyncCandidate).values(rows)   # 一次写入
-
-        # 覆盖式 upsert：同键直接用新值覆盖（简单稳妥）
-        upsert_stmt = stmt.on_conflict_do_update(
-            index_elements=["run_id", "sku_code"],   # 依赖唯一索引/约束 UniqueConstraint
-            set_={
-                "change_mask": stmt.excluded.change_mask,
-                "new_snapshot": stmt.excluded.new_snapshot,
-                "change_count": stmt.excluded.change_count,
-                "updated_at": func.now(),
-            },
+        return _execute_upsert(
+            db,
+            ProductSyncCandidate,
+            rows,
+            conflict_keys=["run_id", "sku_code"],
+            update_columns=["change_mask", "new_snapshot", "change_count"],
+            extra_updates={"updated_at": func.now()},
         )
-
-        res = db.execute(upsert_stmt)
-        return res.rowcount or 0
     except Exception:
         logger.exception(
-            "save_candidates failed: run=%s tuples=%d sample=%s",
-            run_id,
-            len(tuples),
-            tuples[:3],
+            "save_candidates failed: rows=%d sample=%s",
+            len(rows),
+            rows[:3],
         )
         raise
-
-
-
-
-
-def _format_product_tags(value: Any) -> Optional[str]:
-    if value is None:
-        return None
-    if isinstance(value, list):
-        tokens = [str(v).strip() for v in value if v is not None and str(v).strip()]
-        return ",".join(tokens)
-    if isinstance(value, dict):
-        return json.dumps(value, ensure_ascii=False)
-    return str(value)
-
-
-
-def _to_jsonable(value):
-    """
-    递归把任意 Python 值转换为 JSON 可序列化的原生类型：
-    - Decimal -> float（NaN/Inf -> None）
-    - date/datetime -> ISO 字符串
-    - uuid.UUID -> 字符串
-    - tuple/set/list -> list
-    - dict -> dict（键统一转 str）
-    其它（str/int/float/bool/None）原样返回；非法 float（NaN/Inf）转 None
-    """
-    if isinstance(value, Decimal):
-        f = float(value)
-        if math.isnan(f) or math.isinf(f):
-            return None
-        return f
-
-    if isinstance(value, (datetime, date)):
-        return value.isoformat()
-
-    if isinstance(value, uuid.UUID):
-        return str(value)
-
-    if isinstance(value, dict):
-        return {str(k): _to_jsonable(v) for k, v in value.items()}
-
-    if isinstance(value, (list, tuple, set)):
-        return [_to_jsonable(v) for v in value]
-
-    if isinstance(value, float):
-        if math.isnan(value) or math.isinf(value):
-            return None
-        return value
-
-    return value
-
-
-
 
 
 # ===================== 加载计算需要的州运费/重量等快照 =====================
@@ -932,7 +801,7 @@ def export_products_csv_iter_sql(
     keys = rs.keys()
     for rec in rs:
         d = dict(zip(keys, rec))
-        d["product_tags"] = _format_product_tags(d.get("product_tags"))
+        d["product_tags"] = format_product_tags(d.get("product_tags"))
         # special_price_end_date/updated_at 让数据库按默认文本输出（或自行格式化）
         w.writerow([d.get(k) for k in _PRODUCT_EXPORT_COLUMNS])
 
@@ -957,8 +826,10 @@ def load_products_map(db: Session, skus: List[str]) -> Dict[str, Dict[str, objec
         return {}
 
     rows: List[SkuInfo] = (
-        db.query(SkuInfo)
-        .filter(SkuInfo.sku_code.in_(skus))
+        db.execute(
+            select(SkuInfo).where(SkuInfo.sku_code.in_(skus))
+        )
+        .scalars()
         .all()
     )
 

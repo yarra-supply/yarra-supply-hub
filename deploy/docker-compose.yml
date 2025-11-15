@@ -73,7 +73,7 @@ services:
 
   # Celery（worker/beat）也挂相同源码目录 → 改任务代码无需重建镜像，开发效率高。
   worker:
-    container_name: yarra-celery-worker
+    # container_name: yarra-celery-worker
     build: { context: ../backend }
     env_file: [ ./.env ]
     environment:
@@ -85,12 +85,13 @@ services:
       - ../backend:/yarra-workdir/backend
     command: >
       bash -lc "celery -A app.core.celery_app worker -l info"  
+      # bash -lc "celery -A app.core.celery_app worker -l info --concurrency=1 --queues=orchestrator,freight,dsz_io,default"  
       # 指向 Celery 应用实例，不是包目录，导入celery_app.py, 拿里面名为 celery_app 的实例, 使用实例配置的broker_url
     restart: unless-stopped
 
 
   beat:
-    container_name: yarra-celery-beat
+    # container_name: yarra-celery-beat
     build: { context: ../backend }
     env_file: [ ./.env ]
     environment:
@@ -103,6 +104,21 @@ services:
     command: >
       bash -lc "celery -A app.core.celery_app beat -l info"
     restart: unless-stopped
+
+
+  # worker-chunks:
+  #   build: { context: ../backend }
+  #   env_file: [ ./.env ]
+  #   environment:
+  #     PYTHONPATH: /yarra-workdir/backend
+  #   depends_on:
+  #     db: { condition: service_healthy }
+  #     redis: { condition: service_started }
+  #   volumes:
+  #     - ../backend:/yarra-workdir/backend
+  #   command: >
+  #     bash -lc "celery -A app.core.celery_app worker -l info --concurrency=${CHUNKS_WORKER_CONCURRENCY:-2} --queues=chunks"
+  #   restart: unless-stopped
 
 
   frontend:

@@ -22,31 +22,7 @@ logger = logging.getLogger(__name__)
 
 # 测试用
 def _inline_tasks_enabled() -> bool:
-    return True
-    # return bool(getattr(settings, "SYNC_TASKS_INLINE", True))
-
-TEST_SKUS: set[str] = {
-    "DO-PUMP-40L-DC",
-    "BAS-HOOP-160-RDBK",
-    "ODF-KID-PICNIC-UM-PLC",
-    "WL-RTG-2LED-SWL-RD",
-    "WL-SQ-142LED-SWL-BU",
-    "V600-PB-YKJ167",
-    "GCT-PLASTIC-100KG-3IN1-GN",
-    "BAS-HOOP-RETURNER",
-    "V238-SUPDZ-40499321307216",
-    "V238-SUPDZ-40499264258128",
-    "PET-CH-2DOOR-BR",
-    "FURNI-C-TOY3PC-BUORGN",
-    "SJ-C-17-BK",
-    "FIT-PEDAL-ELEC-A-BL",
-    "UC-4820-25-WH",
-    "RD-D-PLY-345-BK",
-    "ESC-S32-6-BK",
-    "BAS-HOOP-B-KID-M-YE",
-    "BAS-HOOP-B-KID-M-RD",
-    "V274-AQ-SP3000",
-}
+    return bool(getattr(settings, "SYNC_TASKS_INLINE", False))
 
 SYNC_CHUNK_SKUS: int = getattr(settings, "SYNC_CHUNK_SKUS", 5000)  # 默认 5k/片
 CHORD_SPLIT_AT: int = getattr(settings, "chord_split_at", 200)     # 单个 chord 的最大 header 数量，超出则分层
@@ -122,7 +98,11 @@ def schedule_chunks_streaming(
                 inline_results.append(process_chunk.run(run_id, chunk_idx, sku_entries, False))
             else:
                 # 这里仅仅“组装”了 sig 并 append 到 sigs 列表，没有立刻发送。真正提交到 Celery 是循环结束后
-                sig = signature(process_task_name).s(run_id, chunk_idx, sku_entries, False).set(task_id=task_id)
+                sig = signature(
+                    process_task_name,
+                    args=(run_id, chunk_idx, sku_entries, False),
+                    task_id=task_id,
+                )
                 sigs.append(sig)
 
 
@@ -166,7 +146,7 @@ def schedule_chunks_streaming(
             "schedule_chunks_streaming end run=%s chunks=%s mode=single-chord",
             run_id, len(sigs),
         )
-        return chord(group(sigs))(finalize_task_name.s(run_id)).id
+        return chord(group(sigs))(signature(finalize_task_name, args=(run_id,))).id
 
     # 分层：把所有分片按 CHORD_SPLIT_AT 切成若干小组 → 小组内用 chord 收敛一次
     buckets = [sigs[i : i + CHORD_SPLIT_AT] for i in range(0, len(sigs), CHORD_SPLIT_AT)]
@@ -179,7 +159,10 @@ def schedule_chunks_streaming(
     ]
 
     # 外层 chord：等待所有小 chord 的回调完成后，先扁平化，再调用 finalize_run
-    final_canvas = chord(group(sub_chords), body=(flatten_results.s() | finalize_task_name.s(run_id)))
+    final_canvas = chord(
+        group(sub_chords),
+        body=flatten_results.s() | signature(finalize_task_name, args=(run_id,)),
+    )
     logger.info(
         "schedule_chunks_streaming end run=%s chunks=%s mode=multi-chord buckets=%s",
         run_id,
@@ -368,7 +351,11 @@ def schedule_chunks_from_manifest(
             from app.orchestration.product_sync.product_sync_task import process_chunk
             inline_results.append(process_chunk.run(run_id, r.chunk_idx, sku_entries, False))
         else:
-            sig = signature(process_task_name).s(run_id, r.chunk_idx, sku_entries, False).set(task_id=task_id)
+            sig = signature(
+                process_task_name,
+                args=(run_id, r.chunk_idx, sku_entries, False),
+                task_id=task_id,
+            )
             sigs.append(sig)
 
     if inline_mode:
@@ -376,11 +363,14 @@ def schedule_chunks_from_manifest(
         return finalize_run.run(inline_results or [], run_id)
 
     if len(sigs) <= max(1, CHORD_SPLIT_AT):
-        return chord(group(sigs))(finalize_task_name.s(run_id)).id
+        return chord(group(sigs))(signature(finalize_task_name, args=(run_id,))).id
 
     buckets = [sigs[i : i + CHORD_SPLIT_AT] for i in range(0, len(sigs), CHORD_SPLIT_AT)]
     sub_chords = [chord(group(bucket), body=collect_bucket.s()) for bucket in buckets if bucket]
-    final_canvas = chord(group(sub_chords), body=(flatten_results.s() | finalize_task_name.s(run_id)))
+    final_canvas = chord(
+        group(sub_chords),
+        body=flatten_results.s() | signature(finalize_task_name, args=(run_id,)),
+    )
     return final_canvas().id
 
 
