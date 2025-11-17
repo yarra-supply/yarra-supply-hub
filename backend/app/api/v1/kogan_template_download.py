@@ -17,6 +17,7 @@ from app.services.kogan_template_service import (
     create_kogan_export_job,
     get_export_job_file,
     serialize_export_job,
+    update_override_files,
 )
 from app.services.auth_service import get_current_user
 
@@ -171,11 +172,15 @@ def apply_kogan_export(
     print("apply_kogan_export called, current_user=", user_dict)
 
     try:
-        job = apply_export_job(
+        job, override_updates = apply_export_job(
             db=db,
             job_id=job_id,
             applied_by=current_user.id,
             # applied_by=None,
+        )
+        update_override_files(
+            price_skus=override_updates.get("price", set()),
+            k1_skus=override_updates.get("k1", set()),
         )
     except ExportJobNotFoundError as exc:
         raise HTTPException(

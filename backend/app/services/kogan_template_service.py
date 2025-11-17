@@ -36,11 +36,20 @@ logger = logging.getLogger(__name__)
 DEFAULT_BATCH_SIZE = 5000
 MIN_BATCH_SIZE = 1000
 MAX_BATCH_SIZE = 10000
-NEED_UPDATE_K1_SKUS_FILE_ENV = "NEED_UPDATE_K1_SKUS_FILE"
-DEFAULT_NEED_UPDATE_K1_SKUS_FILE = (
-    Path(__file__).resolve().parents[2] / "data" / "need_update_k1_skus.txt"
+KOGAN_OVERRIDE_K1_SKUS_FILE_ENV = "KOGAN_OVERRIDE_K1_SKUS_FILE"
+KOGAN_OVERRIDE_PRICE_SKUS_FILE_ENV = "KOGAN_OVERRIDE_PRICE_SKUS_FILE"
+KOGAN_OVERRIDE_RRP_SKUS_FILE_ENV = "KOGAN_OVERRIDE_RRP_SKUS_FILE"
+DEFAULT_KOGAN_OVERRIDE_K1_SKUS_FILE = (
+    Path(__file__).resolve().parents[2] / "data" / "kogan_override_k1_skus.txt"
 )
-_NEED_UPDATE_K1_SKUS_CACHE: Optional[Set[str]] = None
+DEFAULT_KOGAN_OVERRIDE_PRICE_SKUS_FILE = (
+    Path(__file__).resolve().parents[2] / "data" / "kogan_override_price_skus.txt"
+)
+DEFAULT_KOGAN_OVERRIDE_RRP_SKUS_FILE = (
+    Path(__file__).resolve().parents[2] / "data" / "kogan_override_rrp_skus.txt"
+)
+_OVERRIDE_SKU_CACHES: Dict[str, Set[str]] = {}
+
 
 def _resolve_batch_size() -> int:
     size = DEFAULT_BATCH_SIZE
@@ -51,36 +60,6 @@ def _resolve_batch_size() -> int:
     return size
 
 
-def _get_need_update_k1_file_path() -> Path:
-    configured_path = os.getenv(NEED_UPDATE_K1_SKUS_FILE_ENV)
-    if configured_path:
-        return Path(configured_path).expanduser()
-    return DEFAULT_NEED_UPDATE_K1_SKUS_FILE
-
-
-def _load_need_update_k1_skus() -> Set[str]:
-    global _NEED_UPDATE_K1_SKUS_CACHE
-    if _NEED_UPDATE_K1_SKUS_CACHE is not None:
-        return _NEED_UPDATE_K1_SKUS_CACHE
-
-    path = _get_need_update_k1_file_path()
-    skus: Set[str] = set()
-    if not path.exists():
-        logger.debug("Need-update K1 SKU file not found at %s; skipping override.", path)
-        _NEED_UPDATE_K1_SKUS_CACHE = skus
-        return skus
-
-    try:
-        with path.open("r", encoding="utf-8") as handle:
-            for line in handle:
-                sku = line.strip()
-                if sku:
-                    skus.add(sku)
-    except OSError as exc:
-        logger.warning("Failed to read K1 override SKU file %s: %s", path, exc)
-
-    _NEED_UPDATE_K1_SKUS_CACHE = skus
-    return skus
 
 
 @dataclass(frozen=True)
@@ -159,37 +138,6 @@ class ExportJobBuild:
 
 
 
-# ======================= 辅助函数（用于更严谨地判定“是否有非SKU变更”） =======================
-def _has_non_key_diff(sparse: Dict[str, object], columns: Sequence[ColumnSpec]) -> bool:
-    """若 sparse 里包含任意一个非 always_include 列，视为存在真正变更（可导出）。"""
-    for col in columns:
-        if not col.always_include and col.logical_key in sparse:
-            return True
-    return False
-
-
-def _has_product_tag(tags: Optional[object], target: str) -> bool:
-    """判断 product_tags 是否包含指定标签（大小写不敏感）。"""
-    if not tags or not target:
-        return False
-    target_norm = target.strip().lower()
-    if not target_norm:
-        return False
-
-    values: List[str]
-    if isinstance(tags, str):
-        values = [tags]
-    elif isinstance(tags, (list, tuple, set)):
-        values = [str(t) for t in tags if t is not None]
-    else:
-        return False
-
-    for val in values:
-        if isinstance(val, str) and val.strip().lower() == target_norm:
-            return True
-    return False
-
-
 
 """创建导出任务：先生成完整 CSV，再写入数据库，最后返回 job + 文件字节"""
 def create_kogan_export_job(
@@ -250,7 +198,7 @@ def apply_export_job(
     *,
     job_id: str,
     applied_by: Optional[int],
-) -> KoganExportJob:
+) -> tuple[KoganExportJob, Dict[str, Set[str]]]:
     job = get_export_job(db, job_id)
     if job is None:
         raise ExportJobNotFoundError(f"未找到导出任务: {job_id}")
@@ -258,6 +206,9 @@ def apply_export_job(
         raise RuntimeError(f"当前状态不允许回写: {job.status}")
 
     updates = []
+    price_override_skus: Set[str] = set()
+    k1_override_skus: Set[str] = set()
+
     for sku_row in job.skus:
         template_values = _decode_template_payload(sku_row.template_payload)
         if not template_values:
@@ -266,6 +217,11 @@ def apply_export_job(
             "sku": sku_row.sku,
             "values": template_values,
         })
+        changed_cols = set(sku_row.changed_columns or [])
+        if "price" in changed_cols:
+            price_override_skus.add(sku_row.sku)
+        if "kogan_first_price" in changed_cols:
+            k1_override_skus.add(sku_row.sku)
 
     apply_kogan_template_updates(
         db,
@@ -280,7 +236,11 @@ def apply_export_job(
         status=ExportJobStatus.APPLIED,
         applied_by=applied_by,
     )
-    return job
+    override_updates = {
+        "price": price_override_skus,
+        "k1": k1_override_skus,
+    }
+    return job, override_updates
 
 
 
@@ -302,8 +262,11 @@ def _build_export_dataset(
     dirty_order: List[str] = []
     dirty_seen: Set[str] = set()
 
-    # 获取历史上必须更新k1 price的sku list
-    need_update_k1_skus: Set[str] = _load_need_update_k1_skus()
+    # 获取历史上必须更新 k1/price/rrp 的 sku 列表
+    kogan_override_price_skus: Set[str] = _load_kogan_override_price_skus()
+    # kogan_override_rrp_skus: Set[str] = _load_kogan_override_rrp_skus()
+    kogan_override_k1_skus: Set[str] = _load_kogan_override_k1_skus()
+
 
     batch_size = _resolve_batch_size()
     for skus in iter_changed_skus(db=db, country_type=country_type, batch_size=batch_size):
@@ -324,21 +287,25 @@ def _build_export_dataset(
                 dirty_seen.add(sku)
                 dirty_order.append(sku)
             product_row = product_map.get(sku, {})
+            freight_row = freight_map.get(sku, {})
 
+            # sku is NZ but no tags, continue
             if country_type == "NZ" and not _has_product_tag(product_row.get("product_tags"), "Kogan NZ"):
                 continue
 
-            force_first_price = sku in need_update_k1_skus
+            # get sku price/rrp/k1 flag
+            kogan_override_price_flag = sku in kogan_override_price_skus
+            # kogan_override_rrp_flag = sku in kogan_override_rrp_skus
+            kogan_override_k1_flag = sku in kogan_override_k1_skus
 
-            # 4 - build full csv row
+            # 4 - build full csv row: 计算出完整的price/rrp/k1 正确值
             csv_full = _map_to_kogan_csv_row(
                 country_type=country_type,
                 sku=sku,
                 column_specs=column_specs,
                 product_row=product_row,
-                freight_row=freight_map.get(sku, {}),
+                freight_row=freight_row,
                 baseline_row=baseline_map.get(sku),
-                force_first_price=force_first_price,
             )
 
             # 5 - diff against baseline
@@ -351,7 +318,23 @@ def _build_export_dataset(
             if not sparse:
                 continue
 
-            # ===================== 更严格的“非SKU变更”校验 =====================
+            # 6 - 在导出 CSV 前统一判断是否写入 Price/RRP/K1：NZ 通道保留原逻辑
+            price_decimal = _to_decimal(csv_full.get("Price"))
+            freight_shopify_price = _to_decimal(freight_row.get("shopify_price"))
+            sparse = _apply_override_column_rules(
+                sparse,
+                country_type=country_type,
+                price_decimal=price_decimal,
+                freight_shopify_price=freight_shopify_price,
+                override_price=kogan_override_price_flag,
+                override_k1=kogan_override_k1_flag,
+            )
+            #对于新增sku的处理, apply流程才add到txt
+
+            if not sparse:
+                continue
+
+            # 更严格的“非SKU变更”校验 
             if not _has_non_key_diff(sparse, column_specs):  # [CHANGED] 新增保护：仅 SKU 不导出
                 continue
 
@@ -521,28 +504,26 @@ def _map_to_kogan_csv_row(
     freight_row: Dict[str, object],
     *,
     baseline_row: Optional[KoganTemplateModel],
-    force_first_price: bool = False,
+    # force_first_price: bool = False,
 ) -> Dict[str, object]:
    
-    # au price / nz price
-    kogan_price_val = _resolve_price(country_type, product_row, freight_row)
     shipping_val = _resolve_shipping(country_type, freight_row)
     weight_val = _resolve_weight(product_row, freight_row)
-
+    # au price / nz price
+    kogan_price_val = _resolve_price(country_type, product_row, freight_row)
     rrp_val = _resolve_rrp_price(country_type, kogan_price_val, product_row, freight_row)
-
-    kogan_first_price_val = _resolve_first_price(country_type, kogan_price_val, product_row, freight_row)
+    kogan_first_price_val = _resolve_first_price(country_type, kogan_price_val, freight_row)
 
     # AU且满足条件才不更新，NZ都更新
-    if (
-        kogan_price_val is not None
-        and kogan_price_val > Decimal("67")
-        and country_type == "AU"
-        and not force_first_price
-    ):
-        # logger.info("Kogan first price cleared for SKU %s (country=%s): price=%s > 67 and force_first_price=%s",
-        # sku, country_type, price_val, force_first_price,)
-        kogan_first_price_val = None
+    # if (
+    #     kogan_price_val is not None
+    #     and kogan_price_val > Decimal("67")
+    #     and country_type == "AU"
+    #     and not force_first_price
+    # ):
+    #     # logger.info("Kogan first price cleared for SKU %s (country=%s): price=%s > 67 and force_first_price=%s",
+    #     # sku, country_type, price_val, force_first_price,)
+    #     kogan_first_price_val = None
 
 
     row = {
@@ -602,7 +583,8 @@ def _get_value(row: Optional[Dict[str, object]], key: str) -> Optional[object]:
     return row.get(key)
 
 
-def _resolve_price(country_type: str, product_row: Optional[Dict[str, object]], freight_row: Optional[Dict[str, object]]) -> Optional[object]:
+def _resolve_price(country_type: str, product_row: Optional[Dict[str, object]], 
+                   freight_row: Optional[Dict[str, object]]) -> Optional[object]:
     price_key = "kogan_au_price" if country_type == "AU" else "kogan_nz_price"
     return _get_value(freight_row, price_key)
 
@@ -692,7 +674,6 @@ def _resolve_rrp_price(
 def _resolve_first_price(
     country_type: str,
     kogan_price_val: Optional[object],
-    product_row: Optional[Dict[str, object]],
     freight_row: Optional[Dict[str, object]],
 ) -> Optional[object]:
     if country_type == "AU":
@@ -715,6 +696,223 @@ def _calculate_nz_first_price(price_decimal: Decimal) -> Decimal:
 
 
 # ====================== 辅助函数 =======================
+"""
+    根据国家与 override 标记过滤需要写入 CSV 的列。
+    - NZ：不做额外限制，5 个核心字段按照 diff 结果更新；
+    - AU：Price 对新增 SKU（override=false）需要与 Shopify price 比较方可导出；若导出则强制 RRP=Price*1.5；K1 使用原有限制。
+"""
+def _apply_override_column_rules(
+    sparse: Dict[str, object],
+    *,
+    country_type: str,
+    price_decimal: Optional[Decimal],
+    freight_shopify_price: Optional[Decimal],
+    override_price: bool,
+    override_k1: bool,
+) -> Dict[str, object]:
+    
+    if not sparse or country_type != "AU":
+        return sparse
+    
+    # 把 sparse 字典浅拷贝一份，存成 filtered
+    filtered = dict(sparse)
+
+    # 1-Price：新增 SKU 根据 Shopify price 判断是否导出
+    price_kept = "Price" in filtered
+    if price_kept and not override_price:
+        if (
+            price_decimal is None
+            or freight_shopify_price is None
+            or price_decimal <= freight_shopify_price
+        ):
+            filtered.pop("Price")
+            price_kept = False
+
+
+    # 2-RRP：仅当 Price 导出时才写入，并强制等于 Price*1.5
+    if price_kept:
+        rrp_override = _calc_rrp_from_price(price_decimal)
+        if rrp_override is not None:
+            filtered["RRP"] = rrp_override
+        else:
+            filtered.pop("RRP", None)
+    else:
+        filtered.pop("RRP", None)
+
+
+    # 3-Kogan First Price: 如果有变化 & kogan_override_k1_flag =true，不管price <= 67 还是 >67, k1都更新
+    # 如果有变化 & kogan_override_k1_flag =false, price <= 67，k1才写到csv，price >67, 不写到csv
+    if "Kogan First Price" in filtered:
+        if not override_k1:
+            if price_decimal is None or price_decimal > Decimal("67"):
+                filtered.pop("Kogan First Price")
+
+    return filtered
+
+
+
+# 用于更严谨地判定“是否有非SKU变更
+def _has_non_key_diff(sparse: Dict[str, object], columns: Sequence[ColumnSpec]) -> bool:
+    """若 sparse 里包含任意一个非 always_include 列，视为存在真正变更（可导出）。"""
+    for col in columns:
+        if not col.always_include and col.logical_key in sparse:
+            return True
+    return False
+
+
+def _has_product_tag(tags: Optional[object], target: str) -> bool:
+    """判断 product_tags 是否包含指定标签（大小写不敏感）。"""
+    if not tags or not target:
+        return False
+    target_norm = target.strip().lower()
+    if not target_norm:
+        return False
+
+    values: List[str]
+    if isinstance(tags, str):
+        values = [tags]
+    elif isinstance(tags, (list, tuple, set)):
+        values = [str(t) for t in tags if t is not None]
+    else:
+        return False
+
+    for val in values:
+        if isinstance(val, str) and val.strip().lower() == target_norm:
+            return True
+    return False
+
+
+
+
+def _resolve_override_file_path(env_var: str, default_file: Path) -> Path:
+    configured_path = os.getenv(env_var)
+    if configured_path:
+        return Path(configured_path).expanduser()
+    return default_file
+
+
+# 从txt文件load sku
+def _load_override_skus(
+    cache_key: str,
+    *,
+    env_var: str,
+    default_file: Path,
+    label: str,
+) -> Set[str]:
+    cached = _OVERRIDE_SKU_CACHES.get(cache_key)
+    if cached is not None:
+        return cached
+
+    path = _resolve_override_file_path(env_var, default_file)
+    skus: Set[str] = set()
+    if not path.exists():
+        logger.debug("%s file not found at %s; skipping override.", label, path)
+        _OVERRIDE_SKU_CACHES[cache_key] = skus
+        return skus
+
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                sku = line.strip()
+                if sku:
+                    skus.add(sku)
+    except OSError as exc:
+        logger.warning("Failed to read %s file %s: %s", label, path, exc)
+
+    _OVERRIDE_SKU_CACHES[cache_key] = skus
+    return skus
+
+
+def _load_kogan_override_k1_skus() -> Set[str]:
+    return _load_override_skus(
+        "kogan_k1",
+        env_var=KOGAN_OVERRIDE_K1_SKUS_FILE_ENV,
+        default_file=DEFAULT_KOGAN_OVERRIDE_K1_SKUS_FILE,
+        label="Kogan-Override K1 SKU",
+    )
+
+
+def _load_kogan_override_price_skus() -> Set[str]:
+    return _load_override_skus(
+        "kogan_price",
+        env_var=KOGAN_OVERRIDE_PRICE_SKUS_FILE_ENV,
+        default_file=DEFAULT_KOGAN_OVERRIDE_PRICE_SKUS_FILE,
+        label="Kogan-Override Price SKU",
+    )
+
+
+def _load_kogan_override_rrp_skus() -> Set[str]:
+    return _load_override_skus(
+        "kogan_rrp",
+        env_var=KOGAN_OVERRIDE_RRP_SKUS_FILE_ENV,
+        default_file=DEFAULT_KOGAN_OVERRIDE_RRP_SKUS_FILE,
+        label="Kogan-Override RRP SKU",
+    )
+
+
+# update kogan_override_price_skus.txt / kogan_override_k1_skus.txt
+def update_override_files(price_skus: Set[str], k1_skus: Set[str]) -> None:
+    _update_override_files(price_skus=price_skus, k1_skus=k1_skus)
+
+
+def _update_override_files(*, price_skus: Set[str], k1_skus: Set[str]) -> None:
+    _append_override_skus(
+        cache_key="kogan_price",
+        env_var=KOGAN_OVERRIDE_PRICE_SKUS_FILE_ENV,
+        default_file=DEFAULT_KOGAN_OVERRIDE_PRICE_SKUS_FILE,
+        label="Kogan-Override Price SKU",
+        new_skus=price_skus,
+    )
+    _append_override_skus(
+        cache_key="kogan_k1",
+        env_var=KOGAN_OVERRIDE_K1_SKUS_FILE_ENV,
+        default_file=DEFAULT_KOGAN_OVERRIDE_K1_SKUS_FILE,
+        label="Kogan-Override K1 SKU",
+        new_skus=k1_skus,
+    )
+
+
+def _append_override_skus(
+    *,
+    cache_key: str,
+    env_var: str,
+    default_file: Path,
+    label: str,
+    new_skus: Set[str],
+) -> None:
+    if not new_skus:
+        return
+    
+    existing = _OVERRIDE_SKU_CACHES.get(cache_key)
+    if existing is None:
+        existing = _load_override_skus(
+            cache_key,
+            env_var=env_var,
+            default_file=default_file,
+            label=label,
+        )
+
+    # copy to avoid modifying while iterating? but set fine
+    write_skus = [sku for sku in sorted(new_skus) if sku not in existing]
+    if not write_skus:
+        return
+    
+    path = _resolve_override_file_path(env_var, default_file)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            for sku in write_skus:
+                handle.write(f"{sku}\n")
+    except OSError as exc:
+        logger.warning("Failed to append %s entries to %s: %s", label, path, exc)
+        return
+    if existing is None:
+        existing = set()
+    existing.update(write_skus)
+    _OVERRIDE_SKU_CACHES[cache_key] = existing
+
+
+
 def _to_decimal(value: object) -> Optional[Decimal]:
     if value is None:
         return None

@@ -24,7 +24,7 @@ def fetch_product_sync_runs_page(
 
     rows_stmt = (
         select(ProductSyncRun)
-        .order_by(ProductSyncRun.created_at)
+        .order_by(ProductSyncRun.created_at.desc())
         .offset(offset)
         .limit(page_size)
     )
@@ -55,7 +55,10 @@ def fetch_product_sync_chunks_page(
 
     rows_stmt = (
         base_stmt
-        .order_by(ProductSyncChunk.created_at, ProductSyncChunk.chunk_idx)
+        .order_by(
+            ProductSyncChunk.created_at.desc(),
+            ProductSyncChunk.chunk_idx,
+        )
         .offset(offset)
         .limit(page_size)
     )
