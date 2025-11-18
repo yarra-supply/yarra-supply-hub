@@ -60,8 +60,17 @@ def normalize_dsz_product(raw: Dict[str, Any]) -> Dict[str, Any]:
     width  = _to_decimal(raw.get("width"), q="0.001")
     height = _to_decimal(raw.get("height"), q="0.001")
     weight = _to_decimal(raw.get("weight"), q="0.001")
-    # todo length * width * height / 6000?
-    cbm    = _to_decimal(raw.get("cbm"), q="0.0001")
+    
+    # cbm = length * width * height / 6000?
+    try:
+        if length is not None and width is not None and height is not None:
+            cbm = (length * width * height) / Decimal("6000")
+            cbm = cbm.quantize(Decimal("0.0001"))
+        else:
+            cbm = None
+    except (InvalidOperation, TypeError):
+        cbm = None
+
     out["length"] = length
     out["width"] = width
     out["height"] = height

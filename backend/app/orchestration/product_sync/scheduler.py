@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 # 测试用
 def _inline_tasks_enabled() -> bool:
-    return bool(getattr(settings, "SYNC_TASKS_INLINE", False))
+    return bool(getattr(settings, "SYNC_TASKS_INLINE", True))
 
 SYNC_CHUNK_SKUS: int = getattr(settings, "SYNC_CHUNK_SKUS", 5000)  # 默认 5k/片
 CHORD_SPLIT_AT: int = getattr(settings, "chord_split_at", 200)     # 单个 chord 的最大 header 数量，超出则分层
@@ -323,6 +323,7 @@ def schedule_chunks_from_manifest(
 ):
     db = SessionLocal()
     try:
+        # 确定有哪些 chunk 需要重跑
         rows: List[ProductSyncChunk] = (
             db.query(ProductSyncChunk)
               .filter(ProductSyncChunk.run_id == run_id)
@@ -344,6 +345,8 @@ def schedule_chunks_from_manifest(
 
     sigs = []
     inline_results: List[dict] = [] if inline_mode else None
+
+    # 有分片需要重跑：对每条 manifest 记录拿到 sku_codes（就是当初切片时保存的 SKU 列表）
     for r in rows:
         sku_entries = r.sku_codes or []
         task_id = f"ps:chunk:{run_id}:{r.chunk_idx}"
@@ -351,17 +354,16 @@ def schedule_chunks_from_manifest(
             from app.orchestration.product_sync.product_sync_task import process_chunk
             inline_results.append(process_chunk.run(run_id, r.chunk_idx, sku_entries, False))
         else:
-            sig = signature(
-                process_task_name,
-                args=(run_id, r.chunk_idx, sku_entries, False),
-                task_id=task_id,
-            )
+            sig = signature(process_task_name,
+                args=(run_id, r.chunk_idx, sku_entries, False), task_id=task_id,)
             sigs.append(sig)
 
     if inline_mode:
         from app.orchestration.product_sync.product_sync_task import finalize_run
+        # 收集所有 chunk 的返回值后，直接调用 finalize_run.run
         return finalize_run.run(inline_results or [], run_id)
-
+    
+    # 异步mode
     if len(sigs) <= max(1, CHORD_SPLIT_AT):
         return chord(group(sigs))(signature(finalize_task_name, args=(run_id,))).id
 

@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from typing import List, Tuple, Dict, Any, Callable, Optional
 import os
 import requests
+import math
 
 from celery import shared_task
 from celery.exceptions import SoftTimeLimitExceeded
@@ -27,7 +28,11 @@ from app.repository.product_repo import (
     load_variant_ids_by_skus, mark_chunk_running, mark_chunk_succeeded, mark_chunk_failed,
     collect_shopify_skus_for_run, purge_sku_info_absent_from,
 )
-from app.orchestration.product_sync.scheduler import schedule_chunks_streaming
+from app.orchestration.product_sync.scheduler import (
+    schedule_chunks_streaming,
+    schedule_chunks_from_manifest,
+    SYNC_CHUNK_SKUS as SCHED_CHUNK_SIZE,
+)
 from app.orchestration.product_sync.chunk_enricher import enrich_shopify_snapshot
 from app.orchestration.product_sync.utils import diff_snapshot, build_candidate_rows
 from app.orchestration.freight_calculation.freight_task import kick_freight_calc
@@ -45,6 +50,7 @@ except Exception:
 logger = logging.getLogger(__name__)
 _shopify = ShopifyClient()  # 单实例即可
 
+SYNC_CHUNK_SKUS = SCHED_CHUNK_SIZE
 
 
 """
@@ -82,6 +88,13 @@ def sync_start_full_inline(**poll_kwargs: Any) -> str:
 def _sync_start_full_logic(*, inline: bool, poll_kwargs: Dict[str, Any] | None = None) -> str:
 
     logger.info("sync_start_full_logic start inline=%s", inline)
+
+    # check running 的run_id, 继续当前run_id执行
+    resumed_run_id = _resume_running_run_if_any(inline=inline, poll_kwargs=poll_kwargs)
+    if resumed_run_id:
+        logger.info("resume existing run=%s instead of starting new one", resumed_run_id)
+        return resumed_run_id
+
 
     TAG = getattr(settings, "SHOPIFY_TAG_FULL_SYNC", "DropshipzoneAU")
     db = SessionLocal()
@@ -429,6 +442,7 @@ def process_chunk(run_id: str, chunk_idx: int,
 
         # 6) 成功回写 manifest 指标并输出摘要
         _mark_chunk_success(db, run_id, chunk_idx, stats)
+        db.commit()
         _log_chunk_summary(run_id, chunk_idx, stats)
 
         # === 总耗时打印 ===
@@ -453,13 +467,8 @@ def process_chunk(run_id: str, chunk_idx: int,
         }
     
     except Exception as e:
-        # 失败：更新 manifest 为 failed，但不抛出，让 chord 能继续
-        try:
-            mark_chunk_failed(db, run_id, chunk_idx, e) 
-            db.commit()
-        except Exception:
-            db.rollback()
-
+        db.rollback()
+        _mark_chunk_failed_safe(db, run_id, chunk_idx, e)
         logger.exception("chunk failed: run=%s idx=%s err=%s", run_id, chunk_idx, e)
 
         # === 总耗时打印（异常路径）===
@@ -601,6 +610,129 @@ def finalize_run(results, run_id: str):
         pass
 
     return {"run_id": run_id, "candidate_skus": len(sku_set)}
+
+
+
+def _resume_running_run_if_any(
+    *, inline: bool, poll_kwargs: Optional[Dict[str, Any]]
+) -> Optional[str]:
+    db = SessionLocal()
+    try:
+        row = (
+            db.query(ProductSyncRun)
+            .filter(ProductSyncRun.status == "running")
+            .order_by(ProductSyncRun.started_at.asc())
+            .first()
+        )
+        if not row:
+            return None
+
+        run_id = str(row.id)
+        bulk_id = row.shopify_bulk_id
+        bulk_url = row.shopify_bulk_url
+        total_skus = row.total_shopify_skus or 0
+    finally:
+        db.close()
+
+    resumed = _resume_existing_run(
+        run_id=run_id,
+        bulk_id=bulk_id,
+        bulk_url=bulk_url,
+        total_skus=total_skus,
+        inline=inline,
+        poll_kwargs=poll_kwargs,
+    )
+    return run_id if resumed else None
+
+
+def _resume_existing_run(
+    *,
+    run_id: str,
+    bulk_id: Optional[str],
+    bulk_url: Optional[str],
+    total_skus: int,
+    inline: bool,
+    poll_kwargs: Optional[Dict[str, Any]],
+) -> bool:
+    
+    # 1- 只有shopify_bulk_id 没有 URL：重新启动 bulk 轮询
+    if bulk_id and not bulk_url:
+        logger.info("resume run=%s by restarting bulk polling", run_id)
+        if inline:
+            poll_kwargs = poll_kwargs or {}
+            poll_bulk_until_ready_inline(run_id, **(poll_kwargs or {}))
+        else:
+            task_id = f"poll:{bulk_id}"
+            poll_bulk_until_ready.apply_async(args=[run_id], countdown=0, task_id=task_id)
+        return True
+
+    if not bulk_url:
+        return False
+    
+    
+    status_counts, manifest_total = _get_chunk_status_counts(run_id)
+    expected_chunks = _expected_chunk_count(total_skus)
+    # 2 - case 判断：
+    # manifest_total == 0：说明 manifest 里一个 chunk 都没有，通常是还没切片或切片阶段就崩溃，这时需要重新跑 schedule_chunks_streaming。
+    # manifest_total < expected_chunks：说明根据 total_skus 估算应该有更多 chunk，但 manifest 当前数量不足，可能是切片只完成一部分就中断，也应该重新切一次把缺失的 chunk 补齐。
+    need_rechunk = manifest_total == 0 or (
+        expected_chunks is not None and manifest_total < expected_chunks
+    )
+
+    # 3 - 已有 URL 但 manifest 不完整（为空或数量少于应该的 chunk 数）：重新调用 schedule_chunks_streaming，从 Shopify URL 再切一遍，把缺失 chunk 重建出来
+    if need_rechunk:
+        logger.info("resume run=%s by rebuilding manifest via streaming", run_id)
+        schedule_chunks_streaming(run_id, bulk_url)
+        return True
+    
+    # 4 - manifest 已存在但有 pending/running/failed chunk：调用 schedule_chunks_from_manifest 只重投这些 chunk；
+    pending_statuses = tuple(
+        st for st in ("pending", "running", "failed") if status_counts.get(st)
+    )
+    if pending_statuses:
+        logger.info("resume run=%s by rescheduling manifest chunks statuses=%s", run_id, pending_statuses,)
+        schedule_chunks_from_manifest(run_id, statuses=pending_statuses)
+        return True
+    
+    # 5 - 所有分片都 succeeded，但 run 仍未完成，触发 finalize。
+    logger.info("resume run=%s: manifest done, triggering finalize", run_id)
+    if inline or _inline_tasks_enabled():
+        finalize_run.run([], run_id)
+    else:
+        finalize_run.delay([], run_id)
+    return True
+
+
+
+# 查 product_sync_chunks 表里属于该 run_id 的所有分片
+#    - 按 status 统计数量。返回值是两个部分：counts（如 {"pending":2,"succeeded":8}）
+#    - 以及 manifest_total（各状态数量之和）。
+#    - 这个函数用来了解 manifest 当前的整体进度，有没有 chunk 还没跑、有没有失败等。
+def _get_chunk_status_counts(run_id: str) -> tuple[Dict[str, int], int]:
+    db = SessionLocal()
+    try:
+        rows = (
+            db.query(ProductSyncChunk.status, func.count())
+            .filter(ProductSyncChunk.run_id == run_id)
+            .group_by(ProductSyncChunk.status)
+            .all()
+        )
+    finally:
+        db.close()
+    counts = {st: int(cnt) for st, cnt in rows}
+    total = sum(counts.values())
+    return counts, total
+
+
+# 根据当天 Shopify Bulk 预计的总 SKU 数，推算“应该有多少个 chunk”
+#    - 计算方式是：total_skus / SYNC_CHUNK_SKUS 向上取整。
+#    - eg: 比如总共 23,000 个 SKU，默认每片 5,000，则期望是 5 个 chunk
+#    - 如果 total_skus 未知（0 或 None），就返回 None，表示没法判断。
+def _expected_chunk_count(total_skus: int) -> Optional[int]:
+    if not total_skus:
+        return None
+    size = max(1, int(SYNC_CHUNK_SKUS or 5000))
+    return math.ceil(total_skus / size)
 
 
 
@@ -762,8 +894,9 @@ def _mark_chunk_running_safe(db: Session, run_id: str, chunk_idx: int) -> None:
     try:
         mark_chunk_running(db, run_id, chunk_idx)
         db.commit()
-    except Exception:
+    except Exception as exc:
         db.rollback()
+        raise exc
 
 
 def _handle_empty_chunk(db, run_id: str, chunk_idx: int, start_ts: float) -> dict:
@@ -779,6 +912,7 @@ def _handle_empty_chunk(db, run_id: str, chunk_idx: int, start_ts: float) -> dic
         "extra_sku_list": [],
     }
     _mark_chunk_success(db, run_id, chunk_idx, stats)
+    db.commit()
     _log_chunk_summary(run_id, chunk_idx, stats)
     total = time.perf_counter() - start_ts
     print(
@@ -926,10 +1060,8 @@ def _persist_chunk_changes(
             candidates_elapsed = time.perf_counter() - t1
             print(f"[TIMER] process_chunk run={run_id} idx={chunk_idx} save_candidates rows={len(candidate_rows)} time={candidates_elapsed:.3f} s",flush=True,)
 
-        db.commit()
         return upsert_elapsed, candidates_elapsed
     except Exception:
-        db.rollback()
         logger.exception(
             "failed to persist chunk changes: run=%s idx=%s rows=%d candidates=%d",
             run_id,
@@ -943,6 +1075,14 @@ def _persist_chunk_changes(
 def _mark_chunk_success(db, run_id: str, chunk_idx: int, stats: dict[str, Any]) -> None:
     try:
         mark_chunk_succeeded(db, run_id, chunk_idx, stats)
+    except Exception as exc:
+        db.rollback()
+        raise exc
+
+
+def _mark_chunk_failed_safe(db: Session, run_id: str, chunk_idx: int, err: Exception | str) -> None:
+    try:
+        mark_chunk_failed(db, run_id, chunk_idx, err)
         db.commit()
     except Exception:
         db.rollback()
