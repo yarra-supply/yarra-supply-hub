@@ -87,7 +87,20 @@ def freight_calc_run(
         if product_run_id:         # 若传入product_run_id, 从 product_sync_candidates 读取候选 SKU
             target_skus = get_candidate_skus_from_run(db, product_run_id)
 
-            # 为了幂等/去重，再次做哈希过滤更稳妥
+            # if "HR-AIR-AUTO-20M" in target_skus:
+            #     # 打印观察信息
+            #     print(f"Found HR-AIR-AUTO-20M in target_skus, total={len(target_skus)}")
+            #     try:
+            #         sku_info = db.query(SkuInfo).filter(SkuInfo.sku_code == "HR-AIR-AUTO-20M").first()
+            #         if sku_info:
+            #             # 过滤掉内部属性，打印可读字段
+            #             print({k: v for k, v in sku_info.__dict__.items() if not k.startswith("_")})
+            #         else:
+            #             print("SkuInfo not found in DB for HR-AIR-AUTO-20M")
+            #     except Exception as e:
+            #         print("Error fetching SkuInfo for HR-AIR-AUTO-20M:", e)
+
+            # todo：为了幂等/去重，再次做哈希过滤更稳妥, 之后放开？
             #target_skus = filter_need_recalc(db, target_skus)
         else: 
             # 无 run_id：兜底/手动触发，按“哈希差异”做增量筛选（只算“确实变了”的 SKU）
@@ -119,6 +132,25 @@ def freight_calc_run(
         for i in range(0, len(target_skus), BATCH_SIZE):
             iteration_start = time.perf_counter()
             batch = target_skus[i:i + BATCH_SIZE]
+
+
+            # 如果本批次包含特定 SKU，则打印观察信息
+            # if "HR-AIR-AUTO-20M" in batch:
+            #     logger.info(
+            #         "Found HR-AIR-AUTO-20M in batch_index=%d batch_global_range=%d-%d batch_size=%d",
+            #         (i // BATCH_SIZE) + 1,
+            #         i,
+            #         i + len(batch) - 1,
+            #         len(batch),
+            #     )
+            #     try:
+            #         sku_info = db.query(SkuInfo).filter(SkuInfo.sku_code == "HR-AIR-AUTO-20M").first()
+            #         if sku_info:
+            #             logger.info("SkuInfo: %s", {k: v for k, v in sku_info.__dict__.items() if not k.startswith("_")})
+            #         else:
+            #             logger.info("SkuInfo not found in DB for HR-AIR-AUTO-20M")
+            #     except Exception as e:
+            #         logger.exception("Error fetching SkuInfo for HR-AIR-AUTO-20M: %s", e)
 
             # 运费计算 + DB更新
             changed = process_batch_compute_and_persist(db, batch, freight_run_id, cfg=cfg, trigger=trigger)

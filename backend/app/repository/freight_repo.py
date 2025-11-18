@@ -155,7 +155,7 @@ def get_candidate_skus_from_run(db: Session, product_run_id: str) -> List[str]:
 
     skus: List[str] = []
 
-    # 若 change_mask 和 FREIGHT_HASH_FIELDS 有交集，则将 sku_code 纳入
+    # ⚠️ 变更sku收集：若 change_mask 和 FREIGHT_HASH_FIELDS 有交集，则将 sku_code 纳入, 多余变更不更新运费（比如只有stock变了）
     for sku, mask in rows:
         # change_mask 形如 ["price","freight_vic_m", ...]
         if not mask:
@@ -200,6 +200,7 @@ def load_inputs_for_skus(db: Session, skus: List[str]) -> List[Tuple[str, Freigh
             weight=getattr(r, "weight", None),
             cbm=getattr(r, "cbm", None),
 
+            # ⚠️ 从 sku_info获取的这个品的sku相关字段的attrs_hash, 不参与运费公式, 为给sku最终的运算结果的hash赋值
             attrs_hash_current=getattr(r, "attrs_hash_current", None),
 
             # 各州运费输入（从 SkuInfo.freight_* 读取）: compute_all 需要的字段

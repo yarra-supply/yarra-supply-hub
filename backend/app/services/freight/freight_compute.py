@@ -72,7 +72,7 @@ def _cfgI(cfg: Optional[Mapping[str, any]], key: str, default: int) -> int:
     val = cfg.get(key) if isinstance(cfg, Mapping) else None
     return int(val) if val is not None else default
 
-# what？？
+
 def _values_for(keys: tuple[str, ...], fr: Dict[str, Optional[float]]) -> list[Optional[Decimal]]:
     return [_d(fr.get(k)) for k in keys]
 
@@ -170,7 +170,7 @@ class FreightOutputs:
 
 # --------- 逐项计算（完全对齐《变量字段.txt》/PDF 公式） ----------
 """
-Adjust: 若 Selling Price < 25, 取其 4%；否则为空。:contentReference[oaicite:5]{index=5}
+Adjust: 若 Selling Price < 25, 取其 4%；否则为空
 """
 def compute_adjust(
     selling_price: Optional[Decimal],
@@ -184,7 +184,7 @@ def compute_adjust(
 
 def compute_same_shipping(fr: Dict[str, Optional[float]]) -> Optional[Decimal]:
     """
-    SameShipping: 各州(不含 WA_R)最大值 - 最小值。:contentReference[oaicite:6]{index=6}
+    SameShipping: 各州(不含 WA_R)最大值 - 最小值
     用 12 个州（不含 WA_R)运费的最大值减最小值
     """
     vals = [v for v in _values_for(STATES_ALL, fr) if v is not None]
@@ -194,7 +194,7 @@ def compute_same_shipping(fr: Dict[str, Optional[float]]) -> Optional[Decimal]:
 
 def compute_shipping_ave(fr: Dict[str, Optional[float]]) -> Optional[Decimal]:
     """
-    ShippingAve: 上述各州（不含 WA_R)平均,保留 1 位小数。:contentReference[oaicite:7]{index=7}
+    ShippingAve: 上述各州（不含 WA_R)平均,保留 1 位小数
     """
     return _round(_avg(_values_for(STATES_ALL, fr)), "0.0")
 
@@ -590,7 +590,6 @@ def compute_all(i: FreightInputs,
 
     fr = i.state_freight or {}
 
-    # todo 替换字段到DB cfg 功能测试完再换就行
     selling_price = compute_selling_price(i.price, i.special_price, i.special_price_end_date)         # 生效价格
     adjust = compute_adjust(selling_price, cfg=cfg)                                                   # 低价调整
 
@@ -601,7 +600,6 @@ def compute_all(i: FreightInputs,
     shipping_med = compute_shipping_med(fr)
 
     remote_check = compute_remote_check(fr, cfg=cfg)
-    # todo selling price变会变？
     rural_ave = compute_rural_ave(remote_check, fr, shipping_ave)
     weighted_ave_s = compute_weighted_ave_s(remote_check, shipping_ave, rural_ave, cfg=cfg)
     shipping_med_dif = compute_shipping_med_dif(fr, shipping_med)
@@ -611,7 +609,6 @@ def compute_all(i: FreightInputs,
         same_shipping, rural_ave, shipping_med_dif, remote_check, i.price, cfg=cfg
     )
 
-    # 新增：weight（calculate weight）
     weight = compute_weight(
         shipping_type=shipping_type,
         weight=i.weight,
@@ -623,7 +620,6 @@ def compute_all(i: FreightInputs,
     shopify_price = compute_shopify_price(selling_price, cfg=cfg)
     kogan_au_price = compute_kogan_au_price(selling_price, shipping_type, fr.get("VIC_M"), shipping_med, weighted_ave_s, cfg=cfg)
     kogan_k1_price = compute_k1_price(kogan_au_price, cfg=cfg)
-    # todo：变化依赖：selling nz 运费字段 
     kogan_nz_price = compute_kogan_nz_price(selling_price, fr.get("NZ"), cfg=cfg)
     price_ratio = (
         price_ratio_val if isinstance(price_ratio_val, Decimal) else _d(price_ratio_val)

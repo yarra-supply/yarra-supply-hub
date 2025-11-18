@@ -81,6 +81,8 @@ _PRODUCT_EXPORT_COLUMNS = [
     "product_tags", "shopify_price", "attrs_hash_current", "updated_at",
 ]
 
+
+# # 前端表格用到的主要字段 与 sku_info DB字段映射关系
 _PRODUCT_HEADER_LABELS = {
     "sku_code": "SKU",
     "stock_qty": "Stock Qty",

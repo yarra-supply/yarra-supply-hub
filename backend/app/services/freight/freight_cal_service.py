@@ -14,6 +14,7 @@ from app.repository.freight_repo import (
 )
 from app.repository.product_repo import load_products_map
 from app.services.kogan_template_service import _has_product_tag
+import logging
 # from app.repository.shopify_repo import enqueue_shopify_jobs;
 
 
@@ -110,6 +111,9 @@ def process_batch_compute_and_persist(
 
     # 3) 逐个计算并对比
     for sku, fin in inputs:
+        # logger = logging.getLogger(__name__)
+        # if sku == "HR-AIR-AUTO-20M":
+        #     logger.info("sku=%s", sku)
 
         # 运费计算
         out: FreightOutputs = compute_all(fin, cfg=cfg, sku_code=sku)
@@ -127,15 +131,15 @@ def process_batch_compute_and_persist(
         changed_fields = _RESULT_COLS[:] if old is None else _diff_result(old, row)
 
         # Debug logging for specific SKUs
-        _watched_skus = {"DI-ST-N-RDBK-AUG300", "V420-CWMULTIACTIVITYCUBE", "XM-TR-SNOW-190-LED"}
-        if sku in _watched_skus:
-            print(f"[freight_debug] sku={sku}")
-            print("[freight_debug] old:", repr(old))
-            try:
-                print("[freight_debug] row:", json.dumps(row, default=str, ensure_ascii=False))
-            except Exception as _e:
-                print("[freight_debug] row repr:", repr(row), " (json error:", _e, ")")
-            print("[freight_debug] changed_fields:", changed_fields)
+        # _watched_skus = {"DI-ST-N-RDBK-AUG300", "V420-CWMULTIACTIVITYCUBE", "XM-TR-SNOW-190-LED"}
+        # if sku in _watched_skus:
+        #     print(f"[freight_debug] sku={sku}")
+        #     print("[freight_debug] old:", repr(old))
+        #     try:
+        #         print("[freight_debug] row:", json.dumps(row, default=str, ensure_ascii=False))
+        #     except Exception as _e:
+        #         print("[freight_debug] row repr:", repr(row), " (json error:", _e, ")")
+        #     print("[freight_debug] changed_fields:", changed_fields)
 
 
         if changed_fields:

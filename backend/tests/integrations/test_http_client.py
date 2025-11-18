@@ -235,7 +235,7 @@
 
 
 # def _sample_skus1() -> list[str]:
-#     return ["V1026-KLCHH24083WH","V1026-KLCHH24273","V1026-KLCHH24083WH-1"]
+#     return ["V1026-KLCHH24100WH"]
 
 
 

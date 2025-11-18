@@ -60,49 +60,13 @@ def normalize_dsz_product(raw: Dict[str, Any]) -> Dict[str, Any]:
     width  = _to_decimal(raw.get("width"), q="0.001")
     height = _to_decimal(raw.get("height"), q="0.001")
     weight = _to_decimal(raw.get("weight"), q="0.001")
+    # todo length * width * height / 6000?
     cbm    = _to_decimal(raw.get("cbm"), q="0.0001")
     out["length"] = length
     out["width"] = width
     out["height"] = height
     out["weight"] = weight
     out["cbm"] = cbm
-
-    # --- 运费字段（17 项，对齐表里的命名） ---
-    # v = _to_decimal(raw.get("ACT"))
-    # if v is not None: out["freight_act"] = v
-    # v = _to_decimal(raw.get("NSW_M"))
-    # if v is not None: out["freight_nsw_m"] = v
-    # v = _to_decimal(raw.get("NSW_R"))
-    # if v is not None: out["freight_nsw_r"] = v
-    # v = _to_decimal(raw.get("QLD_M"))
-    # if v is not None: out["freight_qld_m"] = v
-    # v = _to_decimal(raw.get("QLD_R"))
-    # if v is not None: out["freight_qld_r"] = v
-    # v = _to_decimal(raw.get("SA_M"))
-    # if v is not None: out["freight_sa_m"] = v
-    # v = _to_decimal(raw.get("SA_R"))
-    # if v is not None: out["freight_sa_r"] = v
-    # v = _to_decimal(raw.get("TAS_M"))
-    # if v is not None: out["freight_tas_m"] = v
-    # v = _to_decimal(raw.get("TAS_R"))
-    # if v is not None: out["freight_tas_r"] = v
-    # v = _to_decimal(raw.get("VIC_M"))
-    # if v is not None: out["freight_vic_m"] = v
-    # v = _to_decimal(raw.get("VIC_R"))
-    # if v is not None: out["freight_vic_r"] = v
-    # v = _to_decimal(raw.get("WA_M"))
-    # if v is not None: out["freight_wa_m"] = v
-    # v = _to_decimal(raw.get("WA_R"))
-    # if v is not None: out["freight_wa_r"] = v
-    # v = _to_decimal(raw.get("NT_M"))
-    # if v is not None: out["freight_nt_m"] = v
-    # v = _to_decimal(raw.get("NT_R"))
-    # if v is not None: out["freight_nt_r"] = v
-    # v = _to_decimal(raw.get("NZ"))
-    # if v is not None: out["freight_nz"] = v
-    # remote = _to_decimal(raw.get("REMOTE"))
-    # if remote is not None:
-    #     out["remote"] = remote
 
 
     #  新接口：/v2/get_zone_rates 返回的 "standard"（小写键）
