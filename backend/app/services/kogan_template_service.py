@@ -199,6 +199,7 @@ def apply_export_job(
     job_id: str,
     applied_by: Optional[int],
 ) -> tuple[KoganExportJob, Dict[str, Set[str]]]:
+    
     job = get_export_job(db, job_id)
     if job is None:
         raise ExportJobNotFoundError(f"未找到导出任务: {job_id}")
@@ -288,6 +289,7 @@ def _build_export_dataset(
                 dirty_order.append(sku)
             product_row = product_map.get(sku, {})
             freight_row = freight_map.get(sku, {})
+            baseline_row = baseline_map.get(sku)
 
             # sku is NZ but no tags, continue
             if country_type == "NZ" and not _has_product_tag(product_row.get("product_tags"), "Kogan NZ"):
@@ -305,13 +307,13 @@ def _build_export_dataset(
                 column_specs=column_specs,
                 product_row=product_row,
                 freight_row=freight_row,
-                baseline_row=baseline_map.get(sku),
+                baseline_row=baseline_row,
             )
 
             # 5 - diff against baseline
             sparse = _diff_against_baseline(
                 csv_row=csv_full,
-                baseline_row=baseline_map.get(sku),
+                baseline_row=baseline_row,
                 columns=column_specs,
             )
 
@@ -321,9 +323,11 @@ def _build_export_dataset(
             # 6 - 在导出 CSV 前统一判断是否写入 Price/RRP/K1：NZ 通道保留原逻辑
             price_decimal = _to_decimal(csv_full.get("Price"))
             freight_shopify_price = _to_decimal(freight_row.get("shopify_price"))
+            is_new_sku = baseline_row is None
             sparse = _apply_override_column_rules(
                 sparse,
                 country_type=country_type,
+                is_new_sku=is_new_sku,
                 price_decimal=price_decimal,
                 freight_shopify_price=freight_shopify_price,
                 override_price=kogan_override_price_flag,
@@ -511,7 +515,7 @@ def _map_to_kogan_csv_row(
     weight_val = _resolve_weight(product_row, freight_row)
     # au price / nz price
     kogan_price_val = _resolve_price(country_type, product_row, freight_row)
-    rrp_val = _resolve_rrp_price(country_type, kogan_price_val, product_row, freight_row)
+    rrp_val = _resolve_rrp_price(country_type, kogan_price_val, product_row)
     kogan_first_price_val = _resolve_first_price(country_type, kogan_price_val, freight_row)
 
     # AU且满足条件才不更新，NZ都更新
@@ -595,7 +599,7 @@ def _resolve_shipping(country_type: str, freight_row: Optional[Dict[str, object]
     else:
         shipping_type = _get_value(freight_row, "shipping_type")
         if isinstance(shipping_type, str) and shipping_type.strip().lower() in {"extra3", "extra4", "extra5"}:
-            return "variable"
+            return " Variable"
         return "0"
 
 
@@ -649,7 +653,6 @@ def _resolve_rrp_price(
     country_type: str,
     kogan_price_val: Optional[object],
     product_row: Optional[Dict[str, object]],
-    freight_row: Optional[Dict[str, object]],
 ) -> Optional[object]:
     
     kogan_price_decimal = _to_decimal(kogan_price_val)
@@ -697,14 +700,16 @@ def _calculate_nz_first_price(price_decimal: Decimal) -> Decimal:
 
 # ====================== 辅助函数 =======================
 """
-    根据国家与 override 标记过滤需要写入 CSV 的列。
+    根据国家、override 标记以及是否为新增 SKU 过滤需要写入 CSV 的列。
     - NZ：不做额外限制，5 个核心字段按照 diff 结果更新；
-    - AU：Price 对新增 SKU（override=false）需要与 Shopify price 比较方可导出；若导出则强制 RRP=Price*1.5；K1 使用原有限制。
+    - AU：仅针对“新增且未 override price”的 SKU，需要 Price 与 Shopify price 比较方可导出；
+          若导出则强制 RRP=Price*1.5；K1 使用原有限制。
 """
 def _apply_override_column_rules(
     sparse: Dict[str, object],
     *,
     country_type: str,
+    is_new_sku: bool,
     price_decimal: Optional[Decimal],
     freight_shopify_price: Optional[Decimal],
     override_price: bool,
@@ -717,14 +722,14 @@ def _apply_override_column_rules(
     # 把 sparse 字典浅拷贝一份，存成 filtered
     filtered = dict(sparse)
 
-    # 1-Price：新增 SKU 根据 Shopify price 判断是否导出
+    # 1-Price：仅新增 SKU（且未强制 override）需要根据 Shopify price 判断是否导出
     price_kept = "Price" in filtered
-    if price_kept and not override_price:
-        if (
-            price_decimal is None
-            or freight_shopify_price is None
-            or price_decimal <= freight_shopify_price
-        ):
+    if price_kept:
+        keep_price = (
+            (is_new_sku and price_decimal is not None and freight_shopify_price is not None and price_decimal > freight_shopify_price)
+            or (not is_new_sku and override_price)
+        )
+        if not keep_price:
             filtered.pop("Price")
             price_kept = False
 
