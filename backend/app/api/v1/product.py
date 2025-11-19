@@ -6,6 +6,7 @@ from fastapi import APIRouter, Query, Depends, Response
 from fastapi.responses import StreamingResponse
 from typing import List, Optional, Literal, Dict, Any
 from datetime import datetime, date, time, timezone
+from zoneinfo import ZoneInfo
 from decimal import Decimal
 from sqlalchemy.orm import Session
 from app.db.session import SessionLocal
@@ -160,7 +161,7 @@ def export_products_csv(
         prefer_sql=True,
     )
 
-    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    ts = datetime.now(ZoneInfo("Australia/Melbourne")).strftime("%Y%m%dT%H%M%S")
     filename = f'products_{ts}.csv'
 
     return StreamingResponse(

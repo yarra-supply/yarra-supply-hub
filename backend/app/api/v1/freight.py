@@ -3,6 +3,7 @@
 from __future__ import annotations
 from typing import List, Optional, Any, Dict
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from decimal import Decimal
 from fastapi import APIRouter, Query, Depends, Response
 from starlette.responses import StreamingResponse
@@ -132,7 +133,7 @@ def export_freight_results(
         shipping_types_csv=st_raw,
     )
 
-    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    ts = datetime.now(ZoneInfo("Australia/Melbourne")).strftime("%Y%m%dT%H%M%S")
     filename = f'freight_results_{ts}.csv'
 
     return StreamingResponse(

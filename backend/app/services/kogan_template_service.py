@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence, Set
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
 import csv
 import io
@@ -391,7 +392,8 @@ def _build_export_dataset(
             )
 
     csv_bytes = buf.getvalue().encode("utf-8")
-    filename = f'kogan_diff_{country_type}_{datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")}.csv'
+    melbourne_now = datetime.now(ZoneInfo("Australia/Melbourne"))
+    filename = f'kogan_diff_{country_type}_{melbourne_now.strftime("%Y%m%dT%H%M%S")}.csv'
 
     skipped_dirty_skus = [sku for sku in dirty_order if sku not in exported_set]
     print("skipped_dirty_skus:", skipped_dirty_skus)
