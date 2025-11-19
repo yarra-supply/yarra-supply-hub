@@ -422,20 +422,16 @@ def compute_weight(
     tolerance = _cfgD(cfg, "weight_tolerance_ratio", 0.15)
 
     if max_weight == 0 or sm == 0:
-        result = (sm / divisor) if sm != 0 else None
-        return None if (result is None or result == 0) else _round(result, "0.01")
+        raw_result = (sm / divisor) if sm != 0 else None
+    else:
+        calc_weight = sm / divisor
+        ratio_diff = (calc_weight - max_weight).copy_abs() / max_weight
+        raw_result = max_weight if ratio_diff <= tolerance else calc_weight
 
-    calc_weight = sm / divisor
-    # 避免除 0，上面已保证 max_weight > 0
-    ratio_diff = (calc_weight - max_weight).copy_abs() / max_weight
-
-    result = max_weight if ratio_diff <= tolerance else calc_weight
-    if result == 0:
+    if raw_result is None or raw_result == 0:
         return None
-    
-    # todo check 不保留2位小数
-    return result
-    # return _round(result, "0.01")
+
+    return raw_result
 
 
 

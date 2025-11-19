@@ -112,7 +112,7 @@ def process_batch_compute_and_persist(
     # 3) 逐个计算并对比
     for sku, fin in inputs:
         # logger = logging.getLogger(__name__)
-        # if sku == "HR-AIR-AUTO-20M":
+        # if sku == "V196-OF430":
         #     logger.info("sku=%s", sku)
 
         # 运费计算

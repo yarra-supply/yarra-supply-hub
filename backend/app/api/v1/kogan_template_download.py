@@ -181,6 +181,7 @@ def apply_kogan_export(
         update_override_files(
             price_skus=override_updates.get("price", set()),
             k1_skus=override_updates.get("k1", set()),
+            shipping_skus=override_updates.get("shipping", set()),
         )
     except ExportJobNotFoundError as exc:
         raise HTTPException(

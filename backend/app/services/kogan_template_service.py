@@ -39,6 +39,7 @@ MAX_BATCH_SIZE = 10000
 KOGAN_OVERRIDE_K1_SKUS_FILE_ENV = "KOGAN_OVERRIDE_K1_SKUS_FILE"
 KOGAN_OVERRIDE_PRICE_SKUS_FILE_ENV = "KOGAN_OVERRIDE_PRICE_SKUS_FILE"
 KOGAN_OVERRIDE_RRP_SKUS_FILE_ENV = "KOGAN_OVERRIDE_RRP_SKUS_FILE"
+KOGAN_OVERRIDE_SHIPPING_SKUS_FILE_ENV = "KOGAN_NOT_OVERRIDE_SHIPPING_SKUS_FILE"
 DEFAULT_KOGAN_OVERRIDE_K1_SKUS_FILE = (
     Path(__file__).resolve().parents[2] / "data" / "kogan_override_k1_skus.txt"
 )
@@ -47,6 +48,9 @@ DEFAULT_KOGAN_OVERRIDE_PRICE_SKUS_FILE = (
 )
 DEFAULT_KOGAN_OVERRIDE_RRP_SKUS_FILE = (
     Path(__file__).resolve().parents[2] / "data" / "kogan_override_rrp_skus.txt"
+)
+DEFAULT_KOGAN_OVERRIDE_SHIPPING_SKUS_FILE = (
+    Path(__file__).resolve().parents[2] / "data" / "kogan_override_shipping_skus.txt"
 )
 _OVERRIDE_SKU_CACHES: Dict[str, Set[str]] = {}
 
@@ -100,6 +104,8 @@ COUNTRY_COLUMN_SPECS: Dict[str, List[ColumnSpec]] = {
 }
 
 HEADER_ONLY_COLUMNS = {"Stock", "Barcode"}
+_PERCENT_DIFF_COLUMNS = {"Price", "Kogan First Price"}
+_PERCENT_DIFF_THRESHOLD = Decimal("0.02")
 
 def _get_column_specs(country_type: str) -> List[ColumnSpec]:
     try:
@@ -152,6 +158,8 @@ def create_kogan_export_job(
     # 1 - 构建导出数据集
     build = _build_export_dataset(db, country_type, column_specs)
     if build.row_count == 0:
+        # 被标记为 dirty 但最后没导出”的 SKU。比如没打 NZ 标签、差值太小、被 override 规则过滤等
+        # 这些 SKU 如果下一次还保持 dirty，就会反复进入导出流程但依旧没输出，因此需要额外收集它们
         if build.skipped_dirty_skus:
             clear_kogan_dirty_flags(db, build.skipped_dirty_skus, country_type=country_type)
             db.commit()
@@ -175,6 +183,9 @@ def create_kogan_export_job(
             for record in build.sku_records
         ],
     )
+
+    # 再次检查 skipped_dirty_skus 并清理其 dirty flag，是为了把这批“尝试过但没有变化”的 SKU 也标记为 clean，
+    # 避免它们下次继续占据 dirty 列表，导致导出任务一直包含相同的无效 SKU。
     if build.skipped_dirty_skus:
         clear_kogan_dirty_flags(db, build.skipped_dirty_skus, country_type=country_type)
         db.commit()
@@ -209,6 +220,7 @@ def apply_export_job(
     updates = []
     price_override_skus: Set[str] = set()
     k1_override_skus: Set[str] = set()
+    shipping_override_skus: Set[str] = set()
 
     for sku_row in job.skus:
         template_values = _decode_template_payload(sku_row.template_payload)
@@ -218,11 +230,15 @@ def apply_export_job(
             "sku": sku_row.sku,
             "values": template_values,
         })
+
+        # 统计本次template 导出变更的sku，用于更新override list
         changed_cols = set(sku_row.changed_columns or [])
         if "price" in changed_cols:
             price_override_skus.add(sku_row.sku)
         if "kogan_first_price" in changed_cols:
             k1_override_skus.add(sku_row.sku)
+        if "shipping" in changed_cols:
+            shipping_override_skus.add(sku_row.sku)
 
     apply_kogan_template_updates(
         db,
@@ -240,6 +256,7 @@ def apply_export_job(
     override_updates = {
         "price": price_override_skus,
         "k1": k1_override_skus,
+        "shipping": shipping_override_skus,
     }
     return job, override_updates
 
@@ -267,6 +284,7 @@ def _build_export_dataset(
     kogan_override_price_skus: Set[str] = _load_kogan_override_price_skus()
     # kogan_override_rrp_skus: Set[str] = _load_kogan_override_rrp_skus()
     kogan_override_k1_skus: Set[str] = _load_kogan_override_k1_skus()
+    kogan_override_shipping_skus: Set[str] = _load_kogan_override_shipping_skus()
 
 
     batch_size = _resolve_batch_size()
@@ -299,6 +317,7 @@ def _build_export_dataset(
             kogan_override_price_flag = sku in kogan_override_price_skus
             # kogan_override_rrp_flag = sku in kogan_override_rrp_skus
             kogan_override_k1_flag = sku in kogan_override_k1_skus
+            kogan_override_shipping_flag = sku in kogan_override_shipping_skus
 
             # 4 - build full csv row: 计算出完整的price/rrp/k1 正确值
             csv_full = _map_to_kogan_csv_row(
@@ -315,6 +334,7 @@ def _build_export_dataset(
                 csv_row=csv_full,
                 baseline_row=baseline_row,
                 columns=column_specs,
+                product_row=product_row,
             )
 
             if not sparse:
@@ -332,6 +352,8 @@ def _build_export_dataset(
                 freight_shopify_price=freight_shopify_price,
                 override_price=kogan_override_price_flag,
                 override_k1=kogan_override_k1_flag,
+                override_shipping=kogan_override_shipping_flag,
+                shipping_value=csv_full.get("Shipping"),
             )
             #对于新增sku的处理, apply流程才add到txt
 
@@ -459,10 +481,12 @@ def _diff_against_baseline(
     baseline_row: Optional[object],  # ORM
     *,
     columns: Sequence[ColumnSpec],
+    product_row: Dict[str, object],
 ) -> Dict[str, object]:
     
     sparse: Dict[str, object] = {}
     has_diff = False
+    product_weight = _to_decimal(product_row.get("weight"))
 
     for col in columns:
         key = col.logical_key
@@ -477,10 +501,26 @@ def _diff_against_baseline(
         if not model_col:
             continue
 
+        # shipping 对Variable/variable 大小写兼容
         new_val = _normalize(csv_row.get(key))
         old_val = None if baseline_row is None else _normalize(getattr(baseline_row, model_col, None))
+        compare_new = new_val
+        compare_old = old_val
 
-        if _values_different(new_val, old_val):
+        if key == "Shipping":
+            compare_new = _normalize_shipping_value(compare_new)
+            compare_old = _normalize_shipping_value(compare_old)
+
+        # 处理price/k1/weight 不变化的逻辑
+        if _values_different(compare_new, compare_old):
+            if key == "Weight" and _should_skip_weight_change(csv_row.get(key), product_weight):
+                continue
+            if (
+                baseline_row is not None
+                and key in _PERCENT_DIFF_COLUMNS
+                and _is_within_percent_threshold(new_val, old_val)
+            ):
+                continue
             sparse[key] = csv_row.get(key)
             has_diff = True
 
@@ -490,6 +530,44 @@ def _diff_against_baseline(
     return sparse
 
 
+"""Return True if percentage delta is below configured threshold."""
+def _is_within_percent_threshold(new_val: object, old_val: object) -> bool:
+    new_decimal = _to_decimal(new_val)
+    old_decimal = _to_decimal(old_val)
+    if new_decimal is None or old_decimal is None:
+        return False
+    if old_decimal == 0:
+        return False
+    try:
+        relative_change = abs(new_decimal - old_decimal) / abs(old_decimal)
+    except (InvalidOperation, ZeroDivisionError):
+        return False
+    return relative_change < _PERCENT_DIFF_THRESHOLD
+
+
+def _normalize_shipping_value(value: object) -> object:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        stripped = value.strip()
+        return stripped.lower() if stripped else None
+    return value
+
+
+"""Return True if weight change should be ignored."""
+def _should_skip_weight_change(weight_val: object, product_weight: Optional[Decimal]) -> bool:
+    weight_decimal = _to_decimal(weight_val)
+    if weight_decimal is None:
+        return False
+    if weight_decimal < Decimal("5"):
+        return True
+    if product_weight is None or product_weight == 0:
+        return False
+    try:
+        relative_delta = (weight_decimal - product_weight).copy_abs() / product_weight.copy_abs()
+    except (InvalidOperation, ZeroDivisionError):
+        return False
+    return relative_delta < Decimal("0.1")
 
 
 
@@ -513,22 +591,9 @@ def _map_to_kogan_csv_row(
    
     shipping_val = _resolve_shipping(country_type, freight_row)
     weight_val = _resolve_weight(product_row, freight_row)
-    # au price / nz price
-    kogan_price_val = _resolve_price(country_type, product_row, freight_row)
+    kogan_price_val = _resolve_price(country_type, product_row, freight_row)  # au price / nz price
     rrp_val = _resolve_rrp_price(country_type, kogan_price_val, product_row)
     kogan_first_price_val = _resolve_first_price(country_type, kogan_price_val, freight_row)
-
-    # AU且满足条件才不更新，NZ都更新
-    # if (
-    #     kogan_price_val is not None
-    #     and kogan_price_val > Decimal("67")
-    #     and country_type == "AU"
-    #     and not force_first_price
-    # ):
-    #     # logger.info("Kogan first price cleared for SKU %s (country=%s): price=%s > 67 and force_first_price=%s",
-    #     # sku, country_type, price_val, force_first_price,)
-    #     kogan_first_price_val = None
-
 
     row = {
         "SKU": sku,
@@ -551,6 +616,8 @@ def _map_to_kogan_csv_row(
     }
 
     # populate columns we do not currently compute with baseline fallback
+    # 补齐逻辑确保每一列都有“当前应导出值”：优先用基于业务规则算出来的新值；若算不出来则回退到基线的旧值
+    # 为了：diff 阶段—只有当确实提供了新值且与旧值不同，才会标记变更
     if baseline_row is not None:
         # check 表头
         for spec in column_specs:
@@ -568,6 +635,8 @@ def _map_to_kogan_csv_row(
             else:
                 row.setdefault(spec.logical_key, None)
     else:
+        # todo ?
+        # baseline 不存在时（新 SKU），直接对每个列调用 setdefault，确保 CSV 行包含所有列 key，缺值用 None
         for spec in column_specs:
             row.setdefault(spec.logical_key, None)
 
@@ -614,22 +683,9 @@ def _resolve_weight(
 
     if isinstance(shipping_type, str) and shipping_type.strip().lower() in {"extra3", "extra4", "extra5"}:
         freight_weight = _to_decimal(freight_weight_raw)
-        product_weight = _to_decimal(product_weight_raw)
 
         # IFERROR wrapper：任何计算异常或缺失都返回空字符串
-        if freight_weight is None or product_weight is None or product_weight == 0:
-            return ""
-
-        # IF 逻辑：freight_weight < 5 或两者相差不到 10% 都返回空字符串
-        if freight_weight < Decimal("5"):
-            return ""
-
-        try:
-            relative_gap = (product_weight - freight_weight) / product_weight
-        except (InvalidOperation, ZeroDivisionError):
-            return ""
-
-        if abs(relative_gap) < Decimal("0.1"):
+        if freight_weight is None:
             return ""
 
         try:
@@ -644,7 +700,7 @@ def _calc_rrp_from_price(price_decimal: Optional[Decimal]) -> Optional[Decimal]:
     if price_decimal is None:
         return None
     try:
-        return (price_decimal * Decimal("1.5")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        return (price_decimal * Decimal("1.5")).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
     except (InvalidOperation, TypeError):
         return None
 
@@ -714,6 +770,8 @@ def _apply_override_column_rules(
     freight_shopify_price: Optional[Decimal],
     override_price: bool,
     override_k1: bool,
+    override_shipping: bool,
+    shipping_value: Optional[object],
 ) -> Dict[str, object]:
     
     if not sparse or country_type != "AU":
@@ -722,20 +780,44 @@ def _apply_override_column_rules(
     # 把 sparse 字典浅拷贝一份，存成 filtered
     filtered = dict(sparse)
 
-    # 1-Price：仅新增 SKU（且未强制 override）需要根据 Shopify price 判断是否导出
+    # 1-Price 判断是否导出逻辑:
+    # 如果有变化 & 新品 & price > shopify_price && override_price = true, 写到csv
+    # 如果有变化 & 新品 & price > shopify_price && override_price = false, 不到csv
+    # 如果有变化 & 新品 & price <= shopify_price && override_price = true, 写到csv
+    # 如果有变化 & 新品 & price <= shopify_price && override_price = false, 不写到csv
+    # 如果有变化 & 不是新品 && override_price = true, 写到csv
+    # 如果有变化 & 不是新品 && override_price = false, 不写到csv
     price_kept = "Price" in filtered
+    price_kept_check_for_rrp = "Price" in filtered
     if price_kept:
-        keep_price = (
-            (is_new_sku and price_decimal is not None and freight_shopify_price is not None and price_decimal > freight_shopify_price)
-            or (not is_new_sku and override_price)
-        )
+        keep_price = False
+        if is_new_sku:
+            if price_decimal is not None and freight_shopify_price is not None:
+                if price_decimal > freight_shopify_price:
+                    keep_price = bool(override_price)
+                else:
+                    keep_price = bool(override_price)
+            else:
+                keep_price = bool(override_price)
+        else:
+            keep_price = bool(override_price)
         if not keep_price:
             filtered.pop("Price")
             price_kept = False
 
 
-    # 2-RRP：仅当 Price 导出时才写入，并强制等于 Price*1.5
-    if price_kept:
+    # 2 - RRP 判断是否导出逻辑: 仅当 Price 导出时才写入，并强制等于 Price*1.5（不对）
+    # if price_kept:
+    #     rrp_override = _calc_rrp_from_price(price_decimal)
+    #     if rrp_override is not None:
+    #         filtered["RRP"] = rrp_override
+    #     else:
+    #         filtered.pop("RRP", None)
+    # else:
+    #     filtered.pop("RRP", None)
+    
+    # todo 新逻辑：price变了，但是没导出，rrp也写？只要price变了就写？还用考虑overrideList吗？
+    if price_kept_check_for_rrp:
         rrp_override = _calc_rrp_from_price(price_decimal)
         if rrp_override is not None:
             filtered["RRP"] = rrp_override
@@ -745,12 +827,44 @@ def _apply_override_column_rules(
         filtered.pop("RRP", None)
 
 
-    # 3-Kogan First Price: 如果有变化 & kogan_override_k1_flag =true，不管price <= 67 还是 >67, k1都更新
-    # 如果有变化 & kogan_override_k1_flag =false, price <= 67，k1才写到csv，price >67, 不写到csv
+
+    # 3 - Kogan First Price 判断是否导出逻辑:
+    # 如果有变化 & kogan_override_k1_flag =true, 写到CSV
+    # 如果有变化 & kogan_override_k1_flag =false, price <= 67，写到csv
+    # 如果有变化 & kogan_override_k1_flag =false, price > 67, 不写到csv
     if "Kogan First Price" in filtered:
-        if not override_k1:
-            if price_decimal is None or price_decimal > Decimal("67"):
-                filtered.pop("Kogan First Price")
+        keep_k1 = False
+        if override_k1:
+            keep_k1 = True
+        else:
+            if price_decimal is not None and price_decimal <= Decimal("67"):
+                keep_k1 = True
+        if not keep_k1:
+            filtered.pop("Kogan First Price")
+
+    # 4 - Shipping: 
+    # 如果有变化 & 新品 & shipping=Variable & override_shipping =false 不写到csv
+    # 如果有变化 & 新品 & shipping=Variable & override_shipping =true 写到csv
+    # 如果有变化 & 新品 & shipping=0 & override_shipping =false 写到csv
+    # 如果有变化 & 新品 & shipping=0 & override_shipping =true 写到csv
+    # 如果有变化 & 不是新品 & shipping=Variable & override_shipping =true, 写到csv
+    # 如果有变化 & 不是新品 & shipping=Variable & override_shipping =false, 不写到csv
+    # 如果有变化 & 不是新品 & shipping=0 & override_shipping =true, 写到csv
+    # 如果有变化 & 不是新品 & shipping=0 & override_shipping =false, 写到csv
+    if "Shipping" in filtered:
+        shipping_str = str(shipping_value or "").strip().lower()
+        shipping_is_variable = shipping_str == "Variable"
+        keep_shipping = True
+        if shipping_is_variable:
+            if is_new_sku:
+                keep_shipping = bool(override_shipping)
+            else:
+                keep_shipping = bool(override_shipping)
+        else:
+            keep_shipping = True
+        if not keep_shipping:
+            filtered.pop("Shipping")
+
 
     return filtered
 
@@ -855,12 +969,21 @@ def _load_kogan_override_rrp_skus() -> Set[str]:
     )
 
 
+def _load_kogan_override_shipping_skus() -> Set[str]:
+    return _load_override_skus(
+        "kogan_shipping",
+        env_var=KOGAN_OVERRIDE_SHIPPING_SKUS_FILE_ENV,
+        default_file=DEFAULT_KOGAN_OVERRIDE_SHIPPING_SKUS_FILE,
+        label="Kogan-Override Shipping SKU",
+    )
+
+
 # update kogan_override_price_skus.txt / kogan_override_k1_skus.txt
-def update_override_files(price_skus: Set[str], k1_skus: Set[str]) -> None:
-    _update_override_files(price_skus=price_skus, k1_skus=k1_skus)
+def update_override_files(price_skus: Set[str], k1_skus: Set[str], shipping_skus: Set[str]) -> None:
+    _update_override_files(price_skus=price_skus, k1_skus=k1_skus, shipping_skus=shipping_skus)
 
 
-def _update_override_files(*, price_skus: Set[str], k1_skus: Set[str]) -> None:
+def _update_override_files(*, price_skus: Set[str], k1_skus: Set[str], shipping_skus: Set[str]) -> None:
     _append_override_skus(
         cache_key="kogan_price",
         env_var=KOGAN_OVERRIDE_PRICE_SKUS_FILE_ENV,
@@ -874,6 +997,13 @@ def _update_override_files(*, price_skus: Set[str], k1_skus: Set[str]) -> None:
         default_file=DEFAULT_KOGAN_OVERRIDE_K1_SKUS_FILE,
         label="Kogan-Override K1 SKU",
         new_skus=k1_skus,
+    )
+    _append_override_skus(
+        cache_key="kogan_shipping",
+        env_var=KOGAN_OVERRIDE_SHIPPING_SKUS_FILE_ENV,
+        default_file=DEFAULT_KOGAN_OVERRIDE_SHIPPING_SKUS_FILE,
+        label="Kogan-Override Shipping SKU",
+        new_skus=shipping_skus,
     )
 
 
