@@ -414,6 +414,24 @@ def process_chunk(run_id: str, chunk_idx: int,
     candidate_tuples: list[tuple[str, dict]] = []
 
     try:
+        # Debug: 如果 sku_codes 中包含目标 SKU，则打印并记录日志，方便观测
+        # target_sku = "FF-DINING-WD-BK"
+        # def _extract_sku(entry: Any) -> Optional[str]:
+        #     if isinstance(entry, str):
+        #         return entry
+        #     if isinstance(entry, dict):
+        #         sku_val = entry.get("sku")
+        #         if isinstance(sku_val, str):
+        #             return sku_val
+        #     return None
+
+        # if any(_extract_sku(entry) == target_sku for entry in sku_codes):
+        #     logger.info(
+        #         "process_chunk run=%s idx=%s contains target SKU %s", run_id, chunk_idx, target_sku
+        #     )
+        #     print(f"process_chunk run={run_id} idx={chunk_idx} contains target SKU {target_sku}")
+
+
         _mark_chunk_running_safe(db, run_id, chunk_idx)
         
         # parse sku, price, variant id, product tags from shopify data

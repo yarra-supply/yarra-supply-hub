@@ -61,7 +61,7 @@ def normalize_dsz_product(raw: Dict[str, Any]) -> Dict[str, Any]:
     height = _to_decimal(raw.get("height"), q="0.001")
     weight = _to_decimal(raw.get("weight"), q="0.001")
     
-    # cbm = length * width * height / 6000?
+    # cbm = length * width * height / 6000?（保留 4 位，匹配 sku_info 数字精度）
     try:
         if length is not None and width is not None and height is not None:
             cbm = (length * width * height) / Decimal("6000")
