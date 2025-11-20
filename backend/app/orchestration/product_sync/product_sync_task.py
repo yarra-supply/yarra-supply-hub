@@ -13,7 +13,7 @@ from app.utils.attrs_hash import calc_attrs_hash_current
 
 from app.core.config import settings
 from app.db.session import SessionLocal
-from sqlalchemy import func
+from sqlalchemy import func, case
 from app.db.model.product import ProductSyncRun, ProductSyncChunk
 
 from app.integrations.shopify.shopify_client import ShopifyClient
@@ -636,10 +636,15 @@ def _resume_running_run_if_any(
 ) -> Optional[str]:
     db = SessionLocal()
     try:
+        status_order = case(
+            (ProductSyncRun.status == "running", 0),
+            (ProductSyncRun.status == "completed_with_gaps", 1),
+            else_=2,
+        )
         row = (
             db.query(ProductSyncRun)
-            .filter(ProductSyncRun.status == "running")
-            .order_by(ProductSyncRun.started_at.asc())
+            .filter(ProductSyncRun.status.in_(("running", "completed_with_gaps")))
+            .order_by(status_order, ProductSyncRun.started_at.asc())
             .first()
         )
         if not row:
@@ -649,6 +654,7 @@ def _resume_running_run_if_any(
         bulk_id = row.shopify_bulk_id
         bulk_url = row.shopify_bulk_url
         total_skus = row.total_shopify_skus or 0
+        current_status = row.status
     finally:
         db.close()
 
@@ -659,6 +665,7 @@ def _resume_running_run_if_any(
         total_skus=total_skus,
         inline=inline,
         poll_kwargs=poll_kwargs,
+        current_status=current_status,
     )
     return run_id if resumed else None
 
@@ -671,6 +678,7 @@ def _resume_existing_run(
     total_skus: int,
     inline: bool,
     poll_kwargs: Optional[Dict[str, Any]],
+    current_status: str,
 ) -> bool:
     
     # 1- 只有shopify_bulk_id 没有 URL：重新启动 bulk 轮询
@@ -699,6 +707,8 @@ def _resume_existing_run(
 
     # 3 - 已有 URL 但 manifest 不完整（为空或数量少于应该的 chunk 数）：重新调用 schedule_chunks_streaming，从 Shopify URL 再切一遍，把缺失 chunk 重建出来
     if need_rechunk:
+        if current_status != "running":
+            _set_run_status(run_id, "running")
         logger.info("resume run=%s by rebuilding manifest via streaming", run_id)
         schedule_chunks_streaming(run_id, bulk_url)
         return True
@@ -708,6 +718,8 @@ def _resume_existing_run(
         st for st in ("pending", "running", "failed") if status_counts.get(st)
     )
     if pending_statuses:
+        if current_status != "running":
+            _set_run_status(run_id, "running")
         logger.info("resume run=%s by rescheduling manifest chunks statuses=%s", run_id, pending_statuses,)
         schedule_chunks_from_manifest(run_id, statuses=pending_statuses)
         return True
@@ -740,6 +752,22 @@ def _get_chunk_status_counts(run_id: str) -> tuple[Dict[str, int], int]:
     counts = {st: int(cnt) for st, cnt in rows}
     total = sum(counts.values())
     return counts, total
+
+
+def _set_run_status(run_id: str, status: str) -> None:
+    db = SessionLocal()
+    try:
+        run = db.get(ProductSyncRun, run_id)
+        if not run:
+            return
+        if run.status == status:
+            return
+        run.status = status
+        if status == "running":
+            run.finished_at = None
+        db.commit()
+    finally:
+        db.close()
 
 
 # 根据当天 Shopify Bulk 预计的总 SKU 数，推算“应该有多少个 chunk”

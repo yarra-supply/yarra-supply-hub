@@ -118,10 +118,10 @@ celery_app.conf.task_routes = {
 celery_app.conf.beat_schedule = {
     
     # 每 5 分钟由 DB 决定是否触发全量同步（具备开关/时间/隔周闸门）
-    # "db-schedule-tick": {
-    #     "task": "app.orchestration.scheduler_tick.tick_product_full_sync",
-    #     "schedule": 180,  # 秒
-    # },
+    "db-schedule-tick": {
+        "task": "app.orchestration.scheduler_tick.tick_product_full_sync",
+        "schedule": 180,  # 秒
+    },
 
     # "db-schedule-price-reset": {
     #     "task": "app.orchestration.scheduler_tick.tick_price_reset",

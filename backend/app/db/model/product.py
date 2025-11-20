@@ -46,7 +46,7 @@ class SkuInfo(Base):
     length:       Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 3))
     width:        Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 3))
     height:       Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 3))
-    cbm:          Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 4))
+    cbm:          Mapped[Optional[Decimal]] = mapped_column(Numeric(15, 4))
     
     ean_code:     Mapped[Optional[str]] = mapped_column(String(255))       # = shopify barcode，传到各个平台，直接用
     supplier:     Mapped[Optional[str]] = mapped_column(String(255))       # 数字？ = shopify vendor？都默认 Yarra Supply？
